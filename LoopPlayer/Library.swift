@@ -289,8 +289,8 @@ enum Scanner {
                 guard let e = it.next() else { break }
                 group.addTask { await read(e) }
             }
-            while let read = await group.next() {
-                var t = read
+            while let finished = await group.next() {
+                var t = finished
                 if let old = previous[t.id] { t.added = old.added }
                 out.append(t)
                 done += 1

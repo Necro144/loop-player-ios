@@ -164,11 +164,3 @@ enum DeviceFolders {
         return out
     }
 }
-
-/// True when the file's contents are not on the phone yet (an iCloud file that is only
-/// listed). Reading such a file starts a download and can take a long time.
-func isDataless(_ path: String) -> Bool {
-    var st = stat()
-    guard lstat(path, &st) == 0 else { return false }
-    return (st.st_flags & 0x40000000) != 0 // SF_DATALESS
-}

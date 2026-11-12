@@ -464,13 +464,9 @@ enum Scanner {
             guard MediaTypes.isMedia(ext) else { continue }
             // An iCloud file that is listed but not on the phone: reading its tags now would
             // download it (and every other one) during the scan. It is read when played.
-            if !placeholder {
-                if isDataless(url.path) {
-                    placeholder = true
-                } else if values?.isUbiquitousItem == true, let status = values?.ubiquitousItemDownloadingStatus,
-                          status != .current, status != .downloaded {
-                    placeholder = true
-                }
+            if !placeholder, values?.isUbiquitousItem == true, let status = values?.ubiquitousItemDownloadingStatus,
+               status == .notDownloaded {
+                placeholder = true
             }
 
             let path = url.standardizedFileURL.path

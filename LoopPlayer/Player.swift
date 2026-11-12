@@ -726,7 +726,6 @@ enum FileAccess {
 
     private static func isCurrent(_ url: URL) -> Bool {
         guard FileManager.default.fileExists(atPath: url.path) else { return false }
-        if isDataless(url.path) { return false }
         guard let v = try? url.resourceValues(forKeys: [.isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey]),
               v.isUbiquitousItem == true, let status = v.ubiquitousItemDownloadingStatus else { return true }
         return status == .current || status == .downloaded

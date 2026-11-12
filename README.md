@@ -29,7 +29,12 @@ Each release has its own "What's new" and the IPA. To publish one, add `release-
 
 ## Tests
 
-`Simulator test on iOS 16.4` builds the app, makes a small test library (`test/make_media.sh`) and runs it on an iOS 16.4 simulator: it scans the folder, plays, loops, opens the video player and saves screenshots as an artifact.
+Both run on an iOS 16.4 simulator, by hand from the Actions tab (Run workflow) or by pushing a `test-*` branch, to save build minutes.
+
+- `Simulator test on iOS 16.4` makes a small test library (`test/make_media.sh`), scans it, plays, loops, opens the video player and saves screenshots.
+- `Folder picker test on iOS 16.4` uses the real Files picker the way you do: Choose a Folder, open a "Suno Songs" folder (one inside the app, one directly in On My iPhone), tap Open, play, then close and reopen the app to check the folder is remembered.
+
+If a folder does not show up on the phone, Settings > Folder Log shows what happened.
 
 ## Building it yourself
 

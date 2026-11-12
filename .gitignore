@@ -1,0 +1,7 @@
+*.xcodeproj
+build/
+simbuild/
+*.ipa
+Payload/
+.DS_Store
+LoopPlayer/Info.plist

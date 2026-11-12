@@ -1,0 +1,52 @@
+name: Build IPA
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate the Xcode project
+        run: xcodegen generate
+
+      - name: Build the app (unsigned)
+        run: |
+          set -o pipefail
+          xcodebuild -project LoopPlayer.xcodeproj -scheme LoopPlayer \
+            -configuration Release -sdk iphoneos -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build > build.log 2>&1 || { grep -E "error:" build.log | head -n 100; tail -n 40 build.log; exit 1; }
+          grep -E "warning: .*LoopPlayer/" build.log | sort -u | head -n 60 || true
+          tail -n 3 build.log
+
+      - name: Package the IPA
+        run: |
+          mkdir Payload
+          cp -R build/Build/Products/Release-iphoneos/LoopPlayer.app Payload/
+          zip -qr LoopPlayer.ipa Payload
+          ls -l *.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LoopPlayer-ipa
+          path: LoopPlayer.ipa
+
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: LoopPlayer.ipa
+          body_path: release-notes/${{ github.ref_name }}.md
+          name: Loop Player ${{ github.ref_name }}

@@ -1,0 +1,96 @@
+name: Simulator test on iOS 16.4
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build for the simulator
+        run: |
+          brew install xcodegen ffmpeg > /dev/null
+          xcodegen generate
+          xcodebuild -project LoopPlayer.xcodeproj -scheme LoopPlayer \
+            -configuration Debug -sdk iphonesimulator -derivedDataPath simbuild \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build > build.log 2>&1 || { grep -E "error:" build.log | head -n 100; tail -n 40 build.log; exit 1; }
+          tail -n 3 build.log
+
+      - name: Make test songs and a video
+        run: bash test/make_media.sh media
+
+      - name: Install an iOS 16.4 simulator runtime
+        run: |
+          xcodebuild -downloadPlatform iOS -buildVersion 16.4 2>&1 | tail -n 5 || echo "download failed"
+          xcrun simctl list runtimes
+
+      - name: Boot the simulator and install the app
+        run: |
+          RT=$(xcrun simctl list runtimes | grep -m1 "iOS 16.4" | grep -oE 'com\.apple\.CoreSimulator\.SimRuntime\.iOS-[0-9-]+' | head -1)
+          if [ -z "$RT" ]; then RT=$(xcrun simctl list runtimes | grep -m1 "iOS " | grep -oE 'com\.apple\.CoreSimulator\.SimRuntime\.iOS-[0-9-]+' | head -1); fi
+          echo "Runtime: $RT"
+          UDID=$(xcrun simctl create "iPhone 14 test" com.apple.CoreSimulator.SimDeviceType.iPhone-14 "$RT")
+          echo "UDID=$UDID" >> "$GITHUB_ENV"
+          xcrun simctl boot "$UDID"
+          xcrun simctl bootstatus "$UDID" -b | tail -n 3
+          xcrun simctl install "$UDID" simbuild/Build/Products/Debug-iphonesimulator/LoopPlayer.app
+          DOCS="$(xcrun simctl get_app_container "$UDID" com.necro144.loopplayer data)/Documents"
+          mkdir -p "$DOCS"
+          cp -R media/. "$DOCS/"
+          find "$DOCS" -type f
+          mkdir -p shots out
+
+      - name: Scan, play and loop
+        run: |
+          shoot () { xcrun simctl io "$UDID" screenshot "shots/$1.png"; }
+          launch () {
+            xcrun simctl terminate "$UDID" com.necro144.loopplayer || true
+            sleep 1
+            env "$@" xcrun simctl launch "$UDID" com.necro144.loopplayer
+          }
+          # 1. add the Documents folder, scan it, play from the top and loop the song
+          launch SIMCTL_CHILD_TEST_ADD_DOCUMENTS=1 SIMCTL_CHILD_TEST_PLAY=1 SIMCTL_CHILD_TEST_REPEAT_ONE=1 \
+                 SIMCTL_CHILD_TEST_TAB=0 SIMCTL_CHILD_TEST_OUT="$GITHUB_WORKSPACE/out/play.txt"
+          sleep 4;  shoot 1-home
+          sleep 10; shoot 2-home-playing
+          echo "===== play report"; cat out/play.txt || echo "no report"
+          # 2. full-screen player
+          launch SIMCTL_CHILD_TEST_PLAY=1 SIMCTL_CHILD_TEST_FULL=1 SIMCTL_CHILD_TEST_TAB=0
+          sleep 6;  shoot 3-full-player
+          # 3. video in the full player
+          launch SIMCTL_CHILD_TEST_PLAY=1 SIMCTL_CHILD_TEST_PLAY_VIDEO=1 SIMCTL_CHILD_TEST_FULL=1 \
+                 SIMCTL_CHILD_TEST_OUT="$GITHUB_WORKSPACE/out/video.txt"
+          sleep 6;  shoot 4-video-player
+          sleep 6
+          echo "===== video report"; cat out/video.txt || echo "no report"
+          # 4. the other tabs (the library comes back from the cache)
+          launch SIMCTL_CHILD_TEST_TAB=1; sleep 4; shoot 5-library
+          launch SIMCTL_CHILD_TEST_TAB=3; sleep 4; shoot 6-playlists
+          launch SIMCTL_CHILD_TEST_TAB=4; sleep 4; shoot 7-settings
+          ls -l shots
+
+      - name: Check the results
+        run: |
+          cat out/play.txt
+          grep -q "^tracks=5$" out/play.txt
+          grep -q "^videos=1$" out/play.txt
+          grep -q "^playing=true$" out/play.txt
+          grep -q "^repeat=2$" out/play.txt
+          grep -q "track: Night Drive | Necro | CI Album" out/play.txt
+          grep -q "track: Lost Signal | Necro |" out/play.txt
+          grep -q "^playing=true$" out/video.txt
+          T=$(grep "^time=" out/play.txt | cut -d= -f2); test "$T" -ge 2
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: simulator-results
+          path: |
+            shots
+            out

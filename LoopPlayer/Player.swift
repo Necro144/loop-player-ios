@@ -688,8 +688,8 @@ final class Player: ObservableObject {
         avPlayer.defaultRate = s.rate
         let lib = Library.shared
         let savedCurrent = s.queue.indices.contains(s.index) ? s.queue[s.index] : nil
-        queue = lib.tracks(s.queue)
-        original = lib.tracks(s.original)
+        queue = lib.lookup(s.queue)
+        original = lib.lookup(s.original)
         guard !queue.isEmpty else { return }
         if let id = savedCurrent, let i = queue.firstIndex(where: { $0.id == id }) {
             index = i

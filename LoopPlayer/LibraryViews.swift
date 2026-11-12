@@ -8,8 +8,8 @@ struct HomeView: View {
     @EnvironmentObject var store: UserStore
 
     var body: some View {
-        let recent = library.tracks(Array(store.recent.prefix(20)))
-        let favorites = library.tracks(Array(store.favorites)).sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+        let recent = library.lookup(Array(store.recent.prefix(20)))
+        let favorites = library.lookup(Array(store.favorites)).sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
         ScrollView {
             VStack(alignment: .leading, spacing: 26) {
                 ScanBanner()
@@ -219,9 +219,9 @@ struct TrackListView: View {
         switch source {
         case .all: return library.tracks
         case .videos: return library.tracks.filter(\.isVideo)
-        case .favorites: return library.tracks(Array(store.favorites))
-        case .recent: return library.tracks(store.recent)
-        case .mostPlayed: return library.tracks(store.mostPlayed())
+        case .favorites: return library.lookup(Array(store.favorites))
+        case .recent: return library.lookup(store.recent)
+        case .mostPlayed: return library.lookup(store.mostPlayed())
         case .artist(let id): return library.artists.first { $0.id == id }?.tracks ?? []
         case .fixed: return fixed
         }
@@ -242,8 +242,8 @@ struct TrackListView: View {
         .darkList()
         .navigationTitle(title)
         .toolbar {
-            if sortable {
-                ToolbarItem(placement: .navigationBarTrailing) {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                if sortable {
                     Menu {
                         Picker("Sort", selection: $sortRaw) {
                             ForEach(SongSort.allCases) { s in Text(s.rawValue).tag(s.rawValue) }
@@ -392,15 +392,15 @@ struct FolderBrowserView: View {
         let subfolders = subfolderCounts(inFolder)
         List {
             PlayShuffleHeader(tracks: inFolder.sorted { $0.relativePath.localizedStandardCompare($1.relativePath) == .orderedAscending })
-            ForEach(subfolders, id: \.0) { name, count in
+            ForEach(subfolders) { sub in
                 NavigationLink {
-                    FolderBrowserView(folderID: folderID, path: path.isEmpty ? name : path + "/" + name, title: name)
+                    FolderBrowserView(folderID: folderID, path: path.isEmpty ? sub.name : path + "/" + sub.name, title: sub.name)
                 } label: {
                     HStack(spacing: 12) {
                         Image(systemName: "folder.fill").foregroundColor(Theme.accent).font(.title3)
-                        Text(name)
+                        Text(sub.name)
                         Spacer()
-                        Text("\(count)").foregroundColor(Theme.dim)
+                        Text("\(sub.count)").foregroundColor(Theme.dim)
                     }
                 }
                 .listRowBackground(Theme.bg)
@@ -413,15 +413,21 @@ struct FolderBrowserView: View {
         .navigationTitle(title)
     }
 
-    private func subfolderCounts(_ tracks: [Track]) -> [(String, Int)] {
+    private func subfolderCounts(_ tracks: [Track]) -> [SubFolder] {
         var counts: [String: Int] = [:]
         for t in tracks where t.directory != path {
             let rest = path.isEmpty ? t.directory : String(t.directory.dropFirst(path.count + 1))
             let first = rest.split(separator: "/", maxSplits: 1).first.map(String.init) ?? rest
             counts[first, default: 0] += 1
         }
-        return counts.sorted { $0.key.localizedStandardCompare($1.key) == .orderedAscending }.map { ($0.key, $0.value) }
+        return counts.sorted { $0.key.localizedStandardCompare($1.key) == .orderedAscending }.map { SubFolder(name: $0.key, count: $0.value) }
     }
+}
+
+struct SubFolder: Identifiable {
+    let name: String
+    let count: Int
+    var id: String { name }
 }
 
 // MARK: - Search
@@ -598,7 +604,7 @@ struct PlaylistDetailView: View {
         let entries: [(Int, Track)] = (playlist?.trackIDs ?? []).enumerated().compactMap { i, id in
             library.track(id).map { (i, $0) }
         }
-        let tracks = entries.map(\.1)
+        let tracks = entries.map { $0.1 }
         List {
             if let playlist {
                 VStack(spacing: 8) {

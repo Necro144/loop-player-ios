@@ -96,7 +96,7 @@ final class Library: ObservableObject {
     }
 
     func track(_ id: String) -> Track? { byID[id] }
-    func tracks(_ ids: [String]) -> [Track] { ids.compactMap { byID[$0] } }
+    func lookup(_ ids: [String]) -> [Track] { ids.compactMap { byID[$0] } }
 
     // MARK: Scanning
 
@@ -289,8 +289,8 @@ enum Scanner {
                 guard let e = it.next() else { break }
                 group.addTask { await read(e) }
             }
-            while let t = await group.next() {
-                var t = t
+            while let read = await group.next() {
+                var t = read
                 if let old = previous[t.id] { t.added = old.added }
                 out.append(t)
                 done += 1

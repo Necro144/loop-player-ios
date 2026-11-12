@@ -215,8 +215,7 @@ enum TestHooks {
                     for t in Grouping.sort(lib.tracks, by: .title) {
                         lines.append("track: \(t.title) | \(t.artist) | \(t.album) | \(Int(t.duration))s | video=\(t.isVideo) | art=\(t.hasArtwork) | \(t.relativePath)")
                     }
-                    try? lines.joined(separator: "
-").write(toFile: out, atomically: true, encoding: .utf8)
+                    try? lines.joined(separator: "\n").write(toFile: out, atomically: true, encoding: .utf8)
                 }
             }
         }

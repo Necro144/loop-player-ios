@@ -46,6 +46,14 @@ jobs:
           if [ -n "$STORE" ]; then
             mkdir -p "$STORE/Suno Songs"
             cp -R media/. "$STORE/Suno Songs/"
+            # The Files picker only shows what the system has indexed: restart the
+            # simulator so On My iPhone is read again, then open Files once more.
+            xcrun simctl shutdown "$UDID"
+            xcrun simctl boot "$UDID"
+            xcrun simctl bootstatus "$UDID" -b | tail -n 2
+            xcrun simctl launch "$UDID" com.apple.DocumentsApp || true
+            sleep 20
+            xcrun simctl terminate "$UDID" com.apple.DocumentsApp || true
             find "$STORE" -maxdepth 3 | head -20
             echo "OUTSIDE_READY=1" >> "$GITHUB_ENV"
           else

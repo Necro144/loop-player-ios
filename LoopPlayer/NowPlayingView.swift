@@ -329,19 +329,22 @@ struct Backdrop: View {
     @State private var image: UIImage?
 
     var body: some View {
-        ZStack {
-            Color.black
-            if let image {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFill()
-                    .blur(radius: 60)
-                    .opacity(0.55)
-                    .clipped()
+        // The image sits in an overlay so its fill size can never widen the screen.
+        Color.black
+            .overlay {
+                if let image {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .blur(radius: 60)
+                        .opacity(0.55)
+                }
             }
-            LinearGradient(colors: [.black.opacity(0.15), .black.opacity(0.65), .black], startPoint: .top, endPoint: .bottom)
-        }
-        .ignoresSafeArea()
+            .overlay {
+                LinearGradient(colors: [.black.opacity(0.15), .black.opacity(0.65), .black], startPoint: .top, endPoint: .bottom)
+            }
+            .clipped()
+            .ignoresSafeArea()
         .task(id: track?.id) {
             guard let track else { image = nil; return }
             let img = await ArtworkCache.shared.image(for: track)

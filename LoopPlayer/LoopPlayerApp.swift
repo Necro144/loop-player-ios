@@ -189,6 +189,8 @@ enum TestHooks {
                 let all = Grouping.sort(Library.shared.tracks, by: .title)
                 if let v = env["TEST_PLAY_VIDEO"], v == "1", let i = all.firstIndex(where: { $0.isVideo }) {
                     Player.shared.play(all, startAt: i)
+                } else if env["TEST_PLAY_VIDEO"] == "0", let i = all.firstIndex(where: { !$0.isVideo && $0.hasArtwork }) {
+                    Player.shared.play(all, startAt: i)
                 } else {
                     Player.shared.play(all)
                 }

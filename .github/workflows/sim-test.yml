@@ -61,7 +61,7 @@ jobs:
           sleep 10; shoot 2-home-playing
           echo "===== play report"; cat out/play.txt || echo "no report"
           # 2. full-screen player
-          launch SIMCTL_CHILD_TEST_PLAY=1 SIMCTL_CHILD_TEST_FULL=1 SIMCTL_CHILD_TEST_TAB=0
+          launch SIMCTL_CHILD_TEST_PLAY=1 SIMCTL_CHILD_TEST_PLAY_VIDEO=0 SIMCTL_CHILD_TEST_FULL=1 SIMCTL_CHILD_TEST_TAB=0
           sleep 6;  shoot 3-full-player
           # 3. video in the full player
           launch SIMCTL_CHILD_TEST_PLAY=1 SIMCTL_CHILD_TEST_PLAY_VIDEO=1 SIMCTL_CHILD_TEST_FULL=1 \

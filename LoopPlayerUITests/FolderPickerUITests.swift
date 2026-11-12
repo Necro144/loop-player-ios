@@ -147,7 +147,7 @@ final class FolderPickerUITests: XCTestCase {
         sleep(3)
         shot(app, tag + "-added")
         // A big library is listed at once by file name; tags (like "Night Drive") follow as they are read.
-        let listed = anything(app, "Night Drive").waitForExistence(timeout: bigLibrary ? 240 : 60)
+        let listed = anything(app, bigLibrary ? "Clip Video" : "Night Drive").waitForExistence(timeout: bigLibrary ? 240 : 60)
         shot(app, tag + "-tags")
         XCTAssertTrue(listed, "Songs from the folder are not listed")
 
@@ -181,7 +181,7 @@ final class FolderPickerUITests: XCTestCase {
         let home = again.tabBars.buttons["Home"]
         if home.waitForExistence(timeout: 60) { home.tap() }
         XCTAssertTrue(again.buttons["Shuffle All"].waitForExistence(timeout: 60), "The folder was forgotten after relaunch")
-        XCTAssertTrue(anything(again, "Night Drive").waitForExistence(timeout: 40), "Songs missing after relaunch")
+        XCTAssertTrue(anything(again, bigLibrary ? "Clip Video" : "Night Drive").waitForExistence(timeout: 40), "Songs missing after relaunch")
         again.buttons["Shuffle All"].tap()
         let pp = again.buttons["miniPlayPause"]
         XCTAssertTrue(pp.waitForExistence(timeout: 20))

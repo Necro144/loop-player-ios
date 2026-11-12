@@ -327,25 +327,50 @@ struct MiniProgress: View {
 
 // MARK: - Folder picker
 
-struct FolderPicker: UIViewControllerRepresentable {
-    var onPick: ([URL]) -> Void
+/// Shows the Files folder picker straight from UIKit.
+/// It used to sit inside a SwiftUI sheet: tapping Open closed that sheet, SwiftUI threw the
+/// picker's delegate away, and the chosen folder was lost. Here the delegate is kept alive
+/// until the picker has reported back, and only one folder is picked at a time (the Open
+/// button picks the folder you are in).
+@MainActor
+final class FolderPickerPresenter: NSObject, UIDocumentPickerDelegate {
+    static let shared = FolderPickerPresenter()
+    private var onPick: (([URL]) -> Void)?
+    private var picker: UIDocumentPickerViewController?
 
-    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+    func present(onPick: @escaping ([URL]) -> Void) {
+        guard picker == nil, let top = Self.topViewController() else { return }
+        self.onPick = onPick
         let vc = UIDocumentPickerViewController(forOpeningContentTypes: [.folder], asCopy: false)
-        vc.allowsMultipleSelection = true
+        vc.allowsMultipleSelection = false
         vc.shouldShowFileExtensions = true
-        vc.delegate = context.coordinator
-        return vc
+        vc.delegate = self
+        picker = vc
+        top.present(vc, animated: true)
     }
 
-    func updateUIViewController(_ vc: UIDocumentPickerViewController, context: Context) {}
+    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        let callback = onPick
+        finish()
+        callback?(urls)
+    }
 
-    func makeCoordinator() -> Coordinator { Coordinator(onPick: onPick) }
+    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+        finish()
+    }
 
-    final class Coordinator: NSObject, UIDocumentPickerDelegate {
-        let onPick: ([URL]) -> Void
-        init(onPick: @escaping ([URL]) -> Void) { self.onPick = onPick }
-        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) { onPick(urls) }
+    private func finish() {
+        onPick = nil
+        picker = nil
+    }
+
+    private static func topViewController() -> UIViewController? {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let scene = scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
+        let window = scene?.windows.first { $0.isKeyWindow } ?? scene?.windows.first
+        var top = window?.rootViewController
+        while let next = top?.presentedViewController, !next.isBeingDismissed { top = next }
+        return top
     }
 }
 
@@ -353,10 +378,12 @@ struct AddFolderButton: View {
     var title = "Add Folder"
     var prominent = false
     @EnvironmentObject var library: Library
-    @State private var picking = false
 
     var body: some View {
-        Button { picking = true } label: {
+        Button {
+            let lib = library
+            FolderPickerPresenter.shared.present { urls in lib.addFolders(urls) }
+        } label: {
             if prominent {
                 Label(title, systemImage: "folder.badge.plus")
                     .font(.headline)
@@ -366,10 +393,6 @@ struct AddFolderButton: View {
             } else {
                 Label(title, systemImage: "folder.badge.plus")
             }
-        }
-        .sheet(isPresented: $picking) {
-            FolderPicker { urls in library.addFolders(urls) }
-                .ignoresSafeArea()
         }
     }
 }

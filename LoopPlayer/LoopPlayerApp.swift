@@ -33,6 +33,7 @@ struct LoopPlayerApp: App {
     @StateObject private var ui = AppUI.shared
 
     init() {
+        TestHooks.prepare()
         let tab = UITabBarAppearance()
         tab.configureWithOpaqueBackground()
         tab.backgroundColor = UIColor(white: 0.035, alpha: 1)
@@ -168,6 +169,26 @@ struct ToastOverlay: View {
 /// Hooks used only by the automated simulator test in GitHub Actions.
 enum TestHooks {
     private static var done = false
+
+    /// Runs before anything is loaded. TEST_RESET starts from a clean app,
+    /// TEST_SEED_DIR copies test songs into Documents/Suno Songs.
+    static func prepare() {
+        let env = ProcessInfo.processInfo.environment
+        let fm = FileManager.default
+        if env["TEST_RESET"] == "1" {
+            if let files = try? fm.contentsOfDirectory(at: AppPaths.support, includingPropertiesForKeys: nil) {
+                for f in files { try? fm.removeItem(at: f) }
+            }
+            for key in ["playerState", "tab", "songSort"] { UserDefaults.standard.removeObject(forKey: key) }
+        }
+        if let seed = env["TEST_SEED_DIR"], !seed.isEmpty {
+            let docs = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            let target = docs.appendingPathComponent("Suno Songs", isDirectory: true)
+            if !fm.fileExists(atPath: target.path) {
+                try? fm.copyItem(at: URL(fileURLWithPath: seed, isDirectory: true), to: target)
+            }
+        }
+    }
 
     @MainActor static func run() {
         guard !done else { return }

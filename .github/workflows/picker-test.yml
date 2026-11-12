@@ -1,0 +1,53 @@
+name: Folder picker test on iOS 16.4
+
+on:
+  push:
+    branches: [main, 'picker-*']
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tools and test songs
+        run: |
+          brew install xcodegen ffmpeg > /dev/null
+          xcodegen generate
+          bash test/make_media.sh media
+
+      - name: Install an iOS 16.4 simulator runtime
+        run: |
+          xcodebuild -downloadPlatform iOS -buildVersion 16.4 2>&1 | tail -n 5 || echo "download failed"
+          xcrun simctl list runtimes
+
+      - name: Create the simulator
+        run: |
+          RT=$(xcrun simctl list runtimes | grep -m1 "iOS 16.4" | grep -oE 'com\.apple\.CoreSimulator\.SimRuntime\.iOS-[0-9-]+' | head -1)
+          echo "Runtime: $RT"
+          test -n "$RT"
+          UDID=$(xcrun simctl create "iPhone 14 picker" com.apple.CoreSimulator.SimDeviceType.iPhone-14 "$RT")
+          echo "UDID=$UDID" >> "$GITHUB_ENV"
+          xcrun simctl boot "$UDID"
+          xcrun simctl bootstatus "$UDID" -b | tail -n 3
+
+      - name: Pick the folder with the real Files picker, tap Open, play
+        run: |
+          mkdir -p shots
+          TEST_RUNNER_SEED_DIR="$GITHUB_WORKSPACE/media" TEST_RUNNER_SHOTS_DIR="$GITHUB_WORKSPACE/shots" \
+          xcodebuild test -project LoopPlayer.xcodeproj -scheme LoopPlayer \
+            -destination "id=$UDID" -derivedDataPath uibuild -resultBundlePath result.xcresult \
+            CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="-" \
+            > test.log 2>&1; STATUS=$?
+          grep -E "error:|Test Case|failed|passed|XCTAssert|TEST (SUCCEEDED|FAILED)" test.log | head -n 80
+          ls shots
+          exit $STATUS
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: picker-test-results
+          path: |
+            shots
+            test.log

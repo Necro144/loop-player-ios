@@ -9,6 +9,9 @@ targets:
     platform: iOS
     sources:
       - LoopPlayer
+    scheme:
+      testTargets:
+        - LoopPlayerUITests
     info:
       path: LoopPlayer/Info.plist
       properties:
@@ -36,3 +39,17 @@ targets:
         CODE_SIGNING_ALLOWED: NO
         CODE_SIGNING_REQUIRED: NO
         CODE_SIGN_IDENTITY: ""
+  LoopPlayerUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - LoopPlayerUITests
+    dependencies:
+      - target: LoopPlayer
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.necro144.loopplayer.uitests
+        TEST_TARGET_NAME: LoopPlayer
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1,2"

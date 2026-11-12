@@ -282,6 +282,8 @@ struct MiniPlayer: View {
                         .frame(width: 44, height: 44)
                         .contentShape(Rectangle())
                     }
+                    .accessibilityIdentifier("miniPlayPause")
+                    .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
                     Button { player.next() } label: {
                         Image(systemName: "forward.fill").font(.title3).frame(width: 40, height: 44).contentShape(Rectangle())
                     }

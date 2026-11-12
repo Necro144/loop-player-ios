@@ -231,6 +231,7 @@ final class Library: ObservableObject {
 
     private func finishScan(_ result: [Track]) {
         isScanning = false
+        log("Scan result: \(result.count) files, \(result.filter { $0.duration > 0 }.count) with a length, \(result.filter(\.hasArtwork).count) with artwork, first: \(result.first.map { "\($0.title) / \($0.relativePath)" } ?? "-")")
         for f in folders {
             let mine = result.filter { $0.folderID == f.id }
             let waiting = mine.filter(\.isPlaceholder).count
@@ -395,6 +396,7 @@ enum Scanner {
             }
         }
         var done = out.count
+        FolderLog.append("\(out.count) unchanged since last scan, \(toRead.count) to read")
         progress(done, total)
         // Everything found so far, with names from the file names until the tags are read.
         var current: [String: Track] = [:]
@@ -550,6 +552,7 @@ enum Scanner {
     static func resetFailures() {
         failLock.lock()
         failures = 0
+        reads = 0
         failLock.unlock()
     }
 
@@ -621,7 +624,17 @@ enum Scanner {
             try? FileManager.default.removeItem(at: artURL)
         }
         await MainActor.run { ArtworkCache.shared.forget(e.id) }
+        Scanner.noteRead("Read \(e.relativePath): title \"\(t.title)\", \(items?.count ?? -1) tags, \(Int(t.duration)) s, art \(t.hasArtwork), file there \(FileManager.default.fileExists(atPath: e.url.path))")
         return t
+    }
+
+    private static var reads = 0
+    static func noteRead(_ text: String) {
+        failLock.lock()
+        reads += 1
+        let n = reads
+        failLock.unlock()
+        if n <= 3 { FolderLog.append(text) }
     }
 }
 

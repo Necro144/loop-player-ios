@@ -18,10 +18,12 @@ A music and video player for your own files on iPhone. Pick a folder in iCloud D
 
 ## Getting the IPA
 
-Take `LoopPlayer.ipa` from the latest release, or from the **Actions** tab (artifact `LoopPlayer-ipa`, a zip). It is unsigned, so install it with:
+Each release has two files:
 
-- **TrollStore** (iOS 16.4.1 is supported): permanent, no expiry.
-- **AltStore** or **Sideloadly**: sign it with your Apple ID. A free account needs a refresh every 7 days.
+- `LoopPlayer.tipa` for **TrollStore** (iOS 16.4.1 is supported): permanent, no expiry. It runs without a sandbox, so **Browse iPhone Folders** opens iCloud Drive and On My iPhone directly. The system folder picker may not hand folders to apps installed this way.
+- `LoopPlayer.ipa` for **AltStore** or **Sideloadly**: signed with your Apple ID, so the system folder picker works. A free account needs a refresh every 7 days.
+
+On any install, **Use the Loop Player folder** reads Files > On My iPhone > Loop Player with no picker at all.
 
 ## Releases
 

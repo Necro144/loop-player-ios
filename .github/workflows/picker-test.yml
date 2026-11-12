@@ -88,6 +88,14 @@ jobs:
           test "$OUTSIDE_READY" = "1" || { echo "On My iPhone storage was not found"; exit 1; }
           exit $STATUS
 
+      - name: The app's Folder Log
+        if: always()
+        run: |
+          C=$(xcrun simctl get_app_container "$UDID" com.necro144.loopplayer data 2>/dev/null || true)
+          echo "Container: $C"
+          cat "$C/Library/Application Support/LoopPlayer/folder-log.txt" 2>/dev/null | tail -n 80 || echo "no log"
+          cp "$C/Library/Application Support/LoopPlayer/folder-log.txt" folder-log.txt 2>/dev/null || true
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -95,3 +103,4 @@ jobs:
           path: |
             shots
             test.log
+            folder-log.txt

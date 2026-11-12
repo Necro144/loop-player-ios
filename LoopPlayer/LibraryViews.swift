@@ -372,6 +372,14 @@ struct FoldersView: View {
             AddFolderButton()
                 .foregroundColor(Theme.accent)
                 .listRowBackground(Theme.bg)
+            if DeviceFolders.available {
+                BrowsePhoneButton()
+                    .foregroundColor(Theme.accent)
+                    .listRowBackground(Theme.bg)
+            }
+            AppFolderButton()
+                .foregroundColor(Theme.accent)
+                .listRowBackground(Theme.bg)
         }
         .darkList()
         .navigationTitle("Folders")
@@ -741,6 +749,8 @@ struct SettingsView: View {
                     }
                 }
                 AddFolderButton().foregroundColor(Theme.accent)
+                if DeviceFolders.available { BrowsePhoneButton().foregroundColor(Theme.accent) }
+                AppFolderButton().foregroundColor(Theme.accent)
             } header: {
                 Text("Folders")
             } footer: {
@@ -860,6 +870,8 @@ struct FolderLogView: View {
         }
         .darkList()
         .navigationTitle("Folder Log")
+        .onAppear { library.reloadLog() }
+        .refreshable { library.reloadLog() }
         .toolbar {
             ToolbarItemGroup(placement: .navigationBarTrailing) {
                 Button { UIPasteboard.general.string = library.folderLog.joined(separator: "\n") } label: {

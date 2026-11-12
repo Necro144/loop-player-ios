@@ -726,16 +726,24 @@ enum FileAccess {
 
     private static func isCurrent(_ url: URL) -> Bool {
         guard FileManager.default.fileExists(atPath: url.path) else { return false }
+        if isDataless(url.path) { return false }
         guard let v = try? url.resourceValues(forKeys: [.isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey]),
-              v.isUbiquitousItem == true else { return true }
-        return v.ubiquitousItemDownloadingStatus == .current || v.ubiquitousItemDownloadingStatus == .downloaded
+              v.isUbiquitousItem == true, let status = v.ubiquitousItemDownloadingStatus else { return true }
+        return status == .current || status == .downloaded
     }
 
     private static func ensureLocalSync(_ url: URL) -> Bool {
         if isCurrent(url) { return true }
+        FolderLog.append("Downloading \(url.lastPathComponent) from iCloud")
         try? FileManager.default.startDownloadingUbiquitousItem(at: url)
         var err: NSError?
         NSFileCoordinator().coordinate(readingItemAt: url, options: [], error: &err) { _ in }
+        if isCurrent(url) { return true }
+        // Reading the first byte makes iOS fetch a file that is only listed.
+        if let h = try? FileHandle(forReadingFrom: url) {
+            _ = try? h.read(upToCount: 1)
+            try? h.close()
+        }
         if isCurrent(url) { return true }
         // Some providers finish the download a little after the coordinated read returns.
         for _ in 0..<240 {

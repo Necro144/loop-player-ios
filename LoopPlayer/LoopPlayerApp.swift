@@ -18,6 +18,7 @@ final class AppUI: ObservableObject {
     static let shared = AppUI()
     @Published var addToPlaylist: TrackIDs?
     @Published var info: Track?
+    @Published var showPhoneBrowser = false
 }
 
 struct TrackIDs: Identifiable {
@@ -34,6 +35,8 @@ struct LoopPlayerApp: App {
 
     init() {
         TestHooks.prepare()
+        Watchdog.start()
+        FolderLog.append("App started (version \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"))" + (DeviceFolders.available ? ", phone folders readable (TrollStore)" : ""))
         let tab = UITabBarAppearance()
         tab.configureWithOpaqueBackground()
         tab.backgroundColor = UIColor(white: 0.035, alpha: 1)
@@ -89,6 +92,10 @@ struct RootView: View {
         }
         .sheet(item: $ui.info) { t in
             TrackInfoView(track: t)
+        }
+        .sheet(isPresented: $ui.showPhoneBrowser) {
+            PhoneBrowserView()
+                .environmentObject(library)
         }
         .overlay(alignment: .top) { ToastOverlay() }
         .alert("Loop Player", isPresented: Binding(get: { library.message != nil }, set: { if !$0 { library.message = nil } })) {

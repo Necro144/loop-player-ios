@@ -38,15 +38,31 @@ jobs:
           zip -qr LoopPlayer.ipa Payload
           ls -l *.ipa
 
+      - name: Package the TIPA for TrollStore
+        run: |
+          # Same app, fake-signed with entitlements that TrollStore keeps: no sandbox, so the
+          # app can open iCloud Drive and On My iPhone folders itself, without the system picker.
+          brew install ldid > /dev/null
+          rm -rf tipa-build && mkdir -p tipa-build/Payload
+          cp -R build/Build/Products/Release-iphoneos/LoopPlayer.app tipa-build/Payload/
+          ldid -Stipa/entitlements.plist tipa-build/Payload/LoopPlayer.app/LoopPlayer
+          ldid -e tipa-build/Payload/LoopPlayer.app/LoopPlayer
+          (cd tipa-build && zip -qr ../LoopPlayer.tipa Payload)
+          ls -l LoopPlayer.tipa
+
       - uses: actions/upload-artifact@v4
         with:
           name: LoopPlayer-ipa
-          path: LoopPlayer.ipa
+          path: |
+            LoopPlayer.ipa
+            LoopPlayer.tipa
 
       - name: Attach to the release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: LoopPlayer.ipa
+          files: |
+            LoopPlayer.ipa
+            LoopPlayer.tipa
           body_path: release-notes/${{ github.ref_name }}.md
           name: Loop Player ${{ github.ref_name }}

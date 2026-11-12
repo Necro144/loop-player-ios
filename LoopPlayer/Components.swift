@@ -374,6 +374,26 @@ final class FolderPickerPresenter: NSObject, UIDocumentPickerDelegate {
     }
 }
 
+/// Uses On My iPhone > Loop Player. Works on every install, even when the system
+/// folder picker will not hand a folder to the app.
+struct AppFolderButton: View {
+    @EnvironmentObject var library: Library
+
+    var body: some View {
+        Button {
+            library.addAppFolder()
+        } label: {
+            VStack(spacing: 2) {
+                Label("Use the Loop Player folder", systemImage: "folder.fill")
+                Text("Files app > On My iPhone > Loop Player")
+                    .font(.caption)
+                    .foregroundColor(Theme.dim)
+            }
+        }
+        .accessibilityIdentifier("useAppFolder")
+    }
+}
+
 struct AddFolderButton: View {
     var title = "Add Folder"
     var prominent = false
@@ -574,7 +594,19 @@ struct WelcomeView: View {
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 30)
             Spacer()
-            AddFolderButton(title: "Choose a Folder", prominent: true)
+            if DeviceFolders.available {
+                // Installed with TrollStore: the phone's folders can be read directly,
+                // without the system picker.
+                BrowsePhoneButton(prominent: true)
+                    .padding(.horizontal, 24)
+                AddFolderButton(title: "Choose a Folder")
+                    .foregroundColor(Theme.accent)
+            } else {
+                AddFolderButton(title: "Choose a Folder", prominent: true)
+                    .padding(.horizontal, 24)
+            }
+            AppFolderButton()
+                .foregroundColor(Theme.accent)
                 .padding(.horizontal, 24)
             Text("MP3 · M4A · AAC · WAV · FLAC · AIFF · MP4 · MOV")
                 .font(.caption)

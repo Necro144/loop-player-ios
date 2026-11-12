@@ -75,6 +75,118 @@ final class FolderPickerUITests: XCTestCase {
         try pickFolderThenPlay(path: ["On My iPhone", "Suno Songs"], tag: "outside")
     }
 
+    /// No picker at all: "Use the Loop Player folder" (On My iPhone > Loop Player).
+    func testUseAppFolder() throws {
+        let env = ProcessInfo.processInfo.environment
+        let app = XCUIApplication()
+        app.launchEnvironment["TEST_RESET"] = "1"
+        if let seed = env["SEED_DIR"] { app.launchEnvironment["TEST_SEED_DIR"] = seed }
+        app.launch()
+        let use = app.buttons["useAppFolder"]
+        XCTAssertTrue(use.waitForExistence(timeout: 90), "Use the Loop Player folder is not shown")
+        use.tap()
+        XCTAssertTrue(app.buttons["Shuffle All"].waitForExistence(timeout: 30), "The Loop Player folder was not added")
+        XCTAssertTrue(anything(app, "Night Drive").waitForExistence(timeout: 40), "Songs are not listed")
+        app.buttons["Shuffle All"].tap()
+        let pp = app.buttons["miniPlayPause"]
+        XCTAssertTrue(pp.waitForExistence(timeout: 20))
+        expectation(for: NSPredicate(format: "label == 'Pause'"), evaluatedWith: pp)
+        waitForExpectations(timeout: 25)
+        shot(app, "appfolder-playing")
+        app.terminate()
+        let again = XCUIApplication()
+        again.launch()
+        XCTAssertTrue(again.buttons["Shuffle All"].waitForExistence(timeout: 60), "Forgotten after relaunch")
+        again.terminate()
+    }
+
+    /// TrollStore way: the built-in browser, On My iPhone > Suno Songs.
+    func testBrowsePhoneOnMyIPhone() throws {
+        guard ProcessInfo.processInfo.environment["OUTSIDE_READY"] == "1" else {
+            throw XCTSkip("No Suno Songs folder was placed in On My iPhone")
+        }
+        try browseThenPlay(place: "On My iPhone", folder: "Suno Songs", tag: "browse-local", bigLibrary: false)
+    }
+
+    /// TrollStore way: the built-in browser, iCloud Drive > Suno Songs. That folder holds
+    /// about 300 files, a file that is only in iCloud (not downloaded) and a broken file.
+    func testBrowsePhoneICloud() throws {
+        guard ProcessInfo.processInfo.environment["ICLOUD_READY"] == "1" else {
+            throw XCTSkip("No iCloud Drive test folder")
+        }
+        try browseThenPlay(place: "iCloud Drive", folder: "Suno Songs", tag: "browse-icloud", bigLibrary: true)
+    }
+
+    private func browseThenPlay(place: String, folder: String, tag: String, bigLibrary: Bool) throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["TEST_RESET"] = "1"
+        app.launch()
+
+        let browse = app.buttons["browsePhone"]
+        XCTAssertTrue(browse.waitForExistence(timeout: 90), "Browse iPhone Folders is not shown")
+        shot(app, tag + "-welcome")
+        browse.tap()
+
+        let placeButton = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", place)).firstMatch
+        XCTAssertTrue(placeButton.waitForExistence(timeout: 20), "\(place) is not listed in the browser")
+        shot(app, tag + "-places")
+        placeButton.tap()
+
+        let folderButton = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", folder)).firstMatch
+        XCTAssertTrue(folderButton.waitForExistence(timeout: 20), "\(folder) is not listed in \(place)")
+        folderButton.tap()
+
+        let use = app.buttons["useThisFolder"]
+        XCTAssertTrue(use.waitForExistence(timeout: 20))
+        sleep(1)
+        shot(app, tag + "-folder")
+        use.tap()
+
+        let shuffle = app.buttons["Shuffle All"]
+        XCTAssertTrue(shuffle.waitForExistence(timeout: 30), "Use This Folder did not add the folder")
+        XCTAssertTrue(anything(app, "Night Drive").waitForExistence(timeout: 60), "Songs from the folder are not listed")
+        shot(app, tag + "-added")
+
+        // The app must stay usable while it scans: play straight away.
+        shuffle.tap()
+        let playPause = app.buttons["miniPlayPause"]
+        XCTAssertTrue(playPause.waitForExistence(timeout: 20), "Mini player did not appear")
+        expectation(for: NSPredicate(format: "label == 'Pause'"), evaluatedWith: playPause)
+        waitForExpectations(timeout: 25)
+        shot(app, tag + "-playing")
+
+        if bigLibrary {
+            // Wait for the scan to finish, then show the log.
+            let scanning = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Scanning' OR label BEGINSWITH 'Looking for'")).firstMatch
+            expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: scanning)
+            waitForExpectations(timeout: 300)
+            shot(app, tag + "-scanned")
+        }
+        app.tabBars.buttons["Settings"].tap()
+        let logLink = app.buttons["Folder Log"]
+        for _ in 0..<4 where !logLink.isHittable { app.swipeUp() }
+        if logLink.isHittable {
+            logLink.tap()
+            sleep(2)
+            shot(app, tag + "-folder-log")
+        }
+
+        app.terminate()
+        let again = XCUIApplication()
+        again.launch()
+        let home = again.tabBars.buttons["Home"]
+        if home.waitForExistence(timeout: 60) { home.tap() }
+        XCTAssertTrue(again.buttons["Shuffle All"].waitForExistence(timeout: 60), "The folder was forgotten after relaunch")
+        XCTAssertTrue(anything(again, "Night Drive").waitForExistence(timeout: 40), "Songs missing after relaunch")
+        again.buttons["Shuffle All"].tap()
+        let pp = again.buttons["miniPlayPause"]
+        XCTAssertTrue(pp.waitForExistence(timeout: 20))
+        expectation(for: NSPredicate(format: "label == 'Pause'"), evaluatedWith: pp)
+        waitForExpectations(timeout: 25)
+        shot(again, tag + "-relaunched-playing")
+        again.terminate()
+    }
+
     private func pickFolderThenPlay(path: [String], tag: String) throws {
         let env = ProcessInfo.processInfo.environment
         let app = XCUIApplication()

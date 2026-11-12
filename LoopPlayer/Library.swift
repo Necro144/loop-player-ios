@@ -39,6 +39,23 @@ final class Library: ObservableObject {
         var changed = false
         var bad: Set<UUID> = []
         for i in folders.indices {
+            if var path = folders[i].path {
+                // Picked with the built-in browser: opened straight from its path.
+                // The app's own folder moves when the app is updated: follow it.
+                if let r = path.range(of: #"/Containers/Data/Application/[^/]+"#, options: .regularExpression),
+                   !FileManager.default.fileExists(atPath: path) {
+                    path = NSHomeDirectory() + path[r.upperBound...]
+                    folders[i].path = path
+                    changed = true
+                }
+                if FileManager.default.isReadableFile(atPath: path) {
+                    folderURLs[folders[i].id] = URL(fileURLWithPath: path, isDirectory: true)
+                } else {
+                    bad.insert(folders[i].id)
+                    log("Could not open \(folders[i].name) at \(path)")
+                }
+                continue
+            }
             var stale = false
             guard !folders[i].bookmark.isEmpty,
                   let url = try? URL(resolvingBookmarkData: folders[i].bookmark, options: [], relativeTo: nil, bookmarkDataIsStale: &stale) else {
@@ -57,40 +74,78 @@ final class Library: ObservableObject {
         if changed { JSONStore.save(folders, "folders.json") }
     }
 
+    /// Folders chosen in the system picker. Nothing slow runs on the main thread here:
+    /// on a phone, iCloud Drive can take a long time to answer the first access and the
+    /// bookmark request, and waiting for it right after "Open" froze the app.
     func addFolders(_ urls: [URL]) {
-        var added = 0
-        if urls.isEmpty { log("Picker returned no folder") }
+        log("Picker returned \(urls.count) folder(s)")
         for url in urls {
-            let access = url.startAccessingSecurityScopedResource()
-            log("Picked \(url.path) (access \(access ? "granted" : "not needed or refused"))")
-            if let existing = folders.first(where: { folderURLs[$0.id]?.standardizedFileURL == url.standardizedFileURL }) {
-                report("\(existing.name) is already in your library.")
-                continue
-            }
-            // Remember the folder for next time. If the system will not make a bookmark,
-            // the folder still works until the app is closed, and the user is told.
-            var bookmark = Data()
-            do {
-                bookmark = try url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
-                log("Bookmark saved (\(bookmark.count) bytes)")
-            } catch {
-                log("Bookmark failed: \(error.localizedDescription)")
-                if let minimal = try? url.bookmarkData(options: .minimalBookmark, includingResourceValuesForKeys: nil, relativeTo: nil) {
-                    bookmark = minimal
-                    log("Minimal bookmark saved (\(minimal.count) bytes)")
-                } else {
-                    report("\(url.lastPathComponent) was added, but iOS would not let the app remember it. You may need to pick it again after closing the app.")
-                }
-            }
-            let f = FolderSource(id: UUID(), name: url.lastPathComponent, bookmark: bookmark, added: Date())
+            if isAlreadyAdded(url) { continue }
+            let f = FolderSource(id: UUID(), name: url.lastPathComponent, bookmark: Data(), added: Date())
             folders.append(f)
             folderURLs[f.id] = url
-            added += 1
+            log("Adding \(f.name) (\(url.path))")
+            let id = f.id
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                let access = url.startAccessingSecurityScopedResource()
+                Task { @MainActor in
+                    self?.log("Folder access \(access ? "granted" : "not needed or refused"), scanning")
+                    self?.rescan()
+                }
+                var bookmark: Data?
+                var problem = ""
+                do {
+                    bookmark = try url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
+                } catch {
+                    problem = error.localizedDescription
+                    bookmark = try? url.bookmarkData(options: .minimalBookmark, includingResourceValuesForKeys: nil, relativeTo: nil)
+                }
+                let result = bookmark
+                let why = problem
+                Task { @MainActor in self?.storeBookmark(id, result, why) }
+            }
         }
-        if added > 0 {
-            JSONStore.save(folders, "folders.json")
-            rescan()
+    }
+
+    private func storeBookmark(_ id: UUID, _ data: Data?, _ problem: String) {
+        guard let i = folders.firstIndex(where: { $0.id == id }) else { return }
+        if let data {
+            folders[i].bookmark = data
+            log("Folder remembered for next time (\(data.count) bytes)" + (problem.isEmpty ? "" : " after: \(problem)"))
+        } else {
+            log("Could not remember the folder: \(problem)")
+            report("\(folders[i].name) was added, but iOS would not let the app remember it. You may need to pick it again after closing the app.")
         }
+        JSONStore.save(folders, "folders.json")
+    }
+
+    /// On My iPhone > Loop Player (the app's own Documents folder). Always readable, no picker:
+    /// songs copied or moved there in the Files app show up here.
+    func addAppFolder() {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let readme = docs.appendingPathComponent("Put your songs here.txt")
+        if !FileManager.default.fileExists(atPath: readme.path) {
+            try? "Copy or move songs and videos into this folder (Files app > On My iPhone > Loop Player). Folders inside it work too.".write(to: readme, atomically: true, encoding: .utf8)
+        }
+        addDeviceFolder(docs, name: "Loop Player (On My iPhone)")
+    }
+
+    /// A folder chosen with the built-in browser (TrollStore install only).
+    func addDeviceFolder(_ url: URL, name: String? = nil) {
+        if isAlreadyAdded(url) { return }
+        let f = FolderSource(id: UUID(), name: name ?? url.lastPathComponent, bookmark: Data(), added: Date(), path: url.path)
+        folders.append(f)
+        folderURLs[f.id] = url
+        log("Added \(f.name) from the phone browser (\(url.path))")
+        JSONStore.save(folders, "folders.json")
+        rescan()
+    }
+
+    private func isAlreadyAdded(_ url: URL) -> Bool {
+        let target = url.standardizedFileURL.path
+        guard let existing = folders.first(where: { folderURLs[$0.id]?.standardizedFileURL.path == target }) else { return false }
+        report("\(existing.name) is already in your library.")
+        return true
     }
 
     /// Shows a message once any closing picker or sheet is out of the way
@@ -105,29 +160,19 @@ final class Library: ObservableObject {
 
     // MARK: Folder log (Settings > Folder Log), to see what happened on the phone
 
-    @Published private(set) var folderLog: [String] = (try? String(contentsOf: AppPaths.support.appendingPathComponent("folder-log.txt"), encoding: .utf8))?
-        .split(separator: "\n").map(String.init) ?? []
+    @Published private(set) var folderLog: [String] = FolderLog.read()
 
     func log(_ line: String) {
-        let stamp = Self.stampFormatter.string(from: Date())
-        folderLog.append("\(stamp)  \(line)")
-        if folderLog.count > 80 { folderLog.removeFirst(folderLog.count - 80) }
-        let text = folderLog.joined(separator: "\n")
-        DispatchQueue.global(qos: .utility).async {
-            try? text.write(to: AppPaths.support.appendingPathComponent("folder-log.txt"), atomically: true, encoding: .utf8)
-        }
+        FolderLog.append(line)
+        folderLog = FolderLog.read()
     }
+
+    func reloadLog() { folderLog = FolderLog.read() }
 
     func clearLog() {
+        FolderLog.clear()
         folderLog = []
-        try? FileManager.default.removeItem(at: AppPaths.support.appendingPathComponent("folder-log.txt"))
     }
-
-    private static let stampFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateFormat = "MMM d HH:mm:ss"
-        return f
-    }()
 
     func removeFolder(_ id: UUID) {
         folderURLs[id]?.stopAccessingSecurityScopedResource()
@@ -160,16 +205,28 @@ final class Library: ObservableObject {
         isScanning = true
         scanDone = 0
         scanTotal = 0
+        scanGeneration += 1
+        let generation = scanGeneration
         scanTask = Task.detached(priority: .userInitiated) { [weak self] in
-            let result = await Scanner.scan(sources: sources, previous: previous) { done, total in
+            let result = await Scanner.scan(sources: sources, previous: previous, progress: { done, total in
                 Task { @MainActor in
                     self?.scanDone = done
                     self?.scanTotal = total
                 }
-            }
+            }, partial: { list in
+                // Songs show up (and can be played) while their tags are still being read.
+                Task { @MainActor in self?.showPartial(list, generation) }
+            })
             if Task.isCancelled { return }
             await self?.finishScan(result)
         }
+    }
+
+    private var scanGeneration = 0
+
+    private func showPartial(_ list: [Track], _ generation: Int) {
+        guard isScanning, generation == scanGeneration else { return }
+        setTracks(list, save: false)
     }
 
     private func finishScan(_ result: [Track]) {
@@ -302,7 +359,8 @@ enum Scanner {
     }
 
     static func scan(sources: [(UUID, URL)], previous: [String: Track],
-                     progress: @escaping (Int, Int) -> Void) async -> [Track] {
+                     progress: @escaping (Int, Int) -> Void,
+                     partial: @escaping ([Track]) -> Void = { _ in }) async -> [Track] {
         var entries: [Entry] = []
         for (id, root) in sources {
             entries += list(folderID: id, root: root)
@@ -320,6 +378,8 @@ enum Scanner {
             }
         }
         let total = unique.count
+        let waiting = unique.filter(\.placeholder).count
+        FolderLog.append("Found \(total) songs/videos" + (waiting > 0 ? " (\(waiting) not downloaded yet, read when played)" : "") + ", reading them")
         progress(0, total)
 
         var out: [Track] = []
@@ -335,29 +395,50 @@ enum Scanner {
         }
         var done = out.count
         progress(done, total)
+        // Everything found so far, with names from the file names until the tags are read.
+        var current: [String: Track] = [:]
+        for t in out { current[t.id] = t }
+        for e in toRead {
+            var t = basic(e)
+            if let old = previous[e.id] { t = old; t.isPlaceholder = e.placeholder }
+            current[t.id] = t
+        }
+        if !toRead.isEmpty { partial(sorted(Array(current.values))) }
+        var lastPartial = Date()
 
         await withTaskGroup(of: Track.self) { group in
             var it = toRead.makeIterator()
-            let width = 6
+            let width = 4
             for _ in 0..<width {
                 guard let e = it.next() else { break }
-                group.addTask { await read(e) }
+                group.addTask { await readLimited(e) }
             }
             while let finished = await group.next() {
                 var t = finished
                 if let old = previous[t.id] { t.added = old.added }
                 out.append(t)
+                current[t.id] = t
                 done += 1
+                if Date().timeIntervalSince(lastPartial) > 4 {
+                    lastPartial = Date()
+                    partial(sorted(Array(current.values)))
+                }
                 if done % 20 == 0 || done == total { progress(done, total) }
                 if Task.isCancelled { group.cancelAll(); break }
-                if let e = it.next() { group.addTask { await read(e) } }
+                if let e = it.next() { group.addTask { await readLimited(e) } }
             }
         }
-        return out.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+        FolderLog.append("Finished reading \(total) songs/videos")
+        return sorted(out)
+    }
+
+    static func sorted(_ list: [Track]) -> [Track] {
+        list.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
     }
 
     static func list(folderID: UUID, root: URL) -> [Entry] {
-        let keys: [URLResourceKey] = [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey]
+        let keys: [URLResourceKey] = [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey,
+                                      .isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey]
         guard let en = FileManager.default.enumerator(at: root, includingPropertiesForKeys: keys,
                                                       options: [.skipsPackageDescendants],
                                                       errorHandler: { _, _ in true }) else { return [] }
@@ -381,6 +462,16 @@ enum Scanner {
             if values?.isDirectory == true { continue }
             let ext = (realName as NSString).pathExtension.lowercased()
             guard MediaTypes.isMedia(ext) else { continue }
+            // An iCloud file that is listed but not on the phone: reading its tags now would
+            // download it (and every other one) during the scan. It is read when played.
+            if !placeholder {
+                if isDataless(url.path) {
+                    placeholder = true
+                } else if values?.isUbiquitousItem == true, let status = values?.ubiquitousItemDownloadingStatus,
+                          status != .current, status != .downloaded {
+                    placeholder = true
+                }
+            }
 
             let path = url.standardizedFileURL.path
             var rel: String
@@ -416,6 +507,45 @@ enum Scanner {
             return (title, artist)
         }
         return (base.isEmpty ? fileName : base, "")
+    }
+
+    /// Reads one file, but gives up after 20 seconds so one slow or broken file
+    /// cannot hold up the whole library.
+    static func readLimited(_ e: Entry) async -> Track {
+        await withCheckedContinuation { (cont: CheckedContinuation<Track, Never>) in
+            let once = Once(cont)
+            Task.detached(priority: .userInitiated) { once.resume(await read(e)) }
+            Task.detached {
+                try? await Task.sleep(nanoseconds: 20_000_000_000)
+                if once.resume(basic(e)) {
+                    FolderLog.append("Gave up reading \(e.relativePath) after 20 s (it still plays)")
+                }
+            }
+        }
+    }
+
+    final class Once: @unchecked Sendable {
+        private let lock = NSLock()
+        private var cont: CheckedContinuation<Track, Never>?
+        init(_ c: CheckedContinuation<Track, Never>) { cont = c }
+        @discardableResult func resume(_ t: Track) -> Bool {
+            lock.lock()
+            let c = cont
+            cont = nil
+            lock.unlock()
+            c?.resume(returning: t)
+            return c != nil
+        }
+    }
+
+    /// A track made from the file name only.
+    static func basic(_ e: Entry) -> Track {
+        let ext = (e.relativePath as NSString).pathExtension.lowercased()
+        let guess = nameGuess((e.relativePath as NSString).lastPathComponent)
+        return Track(id: e.id, folderID: e.folderID, relativePath: e.relativePath,
+                     title: guess.title, artist: guess.artist, album: "", duration: 0,
+                     isVideo: MediaTypes.video.contains(ext), hasArtwork: false,
+                     fileSize: e.size, modified: e.modified, added: Date(), isPlaceholder: e.placeholder)
     }
 
     static func read(_ e: Entry) async -> Track {

@@ -35,6 +35,9 @@ struct FolderSource: Codable, Identifiable, Hashable {
     var name: String
     var bookmark: Data
     var added: Date
+    /// Set for folders picked with the built-in browser (TrollStore install, no sandbox):
+    /// those are opened straight from their path and need no bookmark.
+    var path: String? = nil
 }
 
 struct Playlist: Codable, Identifiable, Hashable {

@@ -25,7 +25,9 @@ struct Track: Codable, Identifiable, Hashable {
     var displayArtist: String { artist.isEmpty ? "Unknown Artist" : artist }
     var displayAlbum: String { album.isEmpty ? "Unknown Album" : album }
 
-    static func == (a: Track, b: Track) -> Bool { a.id == b.id }
+    // Equal only when everything shown is the same, so the screen updates when a song's
+    // tags arrive (comparing ids only kept the first, name-only version on screen).
+    // Code that looks a song up compares ids.
     func hash(into h: inout Hasher) { h.combine(id) }
 }
 

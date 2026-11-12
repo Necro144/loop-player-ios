@@ -91,7 +91,7 @@ final class Player: ObservableObject {
     }
 
     func play(_ track: Track, in list: [Track]) {
-        let i = list.firstIndex(of: track) ?? 0
+        let i = list.firstIndex(where: { $0.id == track.id }) ?? 0
         play(list, startAt: i)
     }
 
@@ -104,7 +104,7 @@ final class Player: ObservableObject {
         guard !tracks.isEmpty else { return }
         if queue.isEmpty { play(tracks); return }
         queue.insert(contentsOf: tracks, at: index + 1)
-        if let cur = current, let o = original.firstIndex(of: cur) {
+        if let cur = current, let o = original.firstIndex(where: { $0.id == cur.id }) {
             original.insert(contentsOf: tracks, at: o + 1)
         } else {
             original.append(contentsOf: tracks)
@@ -145,7 +145,7 @@ final class Player: ObservableObject {
         guard index + 1 < queue.count else { return }
         let removed = Set(queue[(index + 1)...].map(\.id))
         queue.removeSubrange((index + 1)...)
-        original.removeAll { removed.contains($0.id) && $0 != current }
+        original.removeAll { removed.contains($0.id) && $0.id != current?.id }
         saveState(force: true)
     }
 
@@ -249,7 +249,7 @@ final class Player: ObservableObject {
                 index = 0
             } else {
                 queue = original.isEmpty ? queue : original
-                index = queue.firstIndex(of: cur) ?? 0
+                index = queue.firstIndex(where: { $0.id == cur.id }) ?? 0
             }
         }
         toast = on ? "Shuffle on" : "Shuffle off"

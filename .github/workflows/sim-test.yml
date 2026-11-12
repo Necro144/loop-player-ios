@@ -52,13 +52,17 @@ jobs:
           launch () {
             xcrun simctl terminate "$UDID" com.necro144.loopplayer || true
             sleep 1
-            env "$@" xcrun simctl launch "$UDID" com.necro144.loopplayer
+            env SIMCTL_CHILD_TEST_ADD_DOCUMENTS=1 "$@" xcrun simctl launch "$UDID" com.necro144.loopplayer
           }
+          # 0. warm-up: the very first launch on a fresh simulator can take a long time
+          launch SIMCTL_CHILD_TEST_TAB=0
+          sleep 25
           # 1. add the Documents folder, scan it, play from the top and loop the song
           launch SIMCTL_CHILD_TEST_ADD_DOCUMENTS=1 SIMCTL_CHILD_TEST_PLAY=1 SIMCTL_CHILD_TEST_REPEAT_ONE=1 \
                  SIMCTL_CHILD_TEST_TAB=0 SIMCTL_CHILD_TEST_OUT="$GITHUB_WORKSPACE/out/play.txt"
           sleep 4;  shoot 1-home
-          sleep 10; shoot 2-home-playing
+          for i in $(seq 1 30); do [ -f out/play.txt ] && break; sleep 2; done
+          shoot 2-home-playing
           echo "===== play report"; cat out/play.txt || echo "no report"
           # 2. full-screen player
           launch SIMCTL_CHILD_TEST_PLAY=1 SIMCTL_CHILD_TEST_PLAY_VIDEO=0 SIMCTL_CHILD_TEST_FULL=1 SIMCTL_CHILD_TEST_TAB=0
@@ -67,7 +71,7 @@ jobs:
           launch SIMCTL_CHILD_TEST_PLAY=1 SIMCTL_CHILD_TEST_PLAY_VIDEO=1 SIMCTL_CHILD_TEST_FULL=1 \
                  SIMCTL_CHILD_TEST_OUT="$GITHUB_WORKSPACE/out/video.txt"
           sleep 6;  shoot 4-video-player
-          sleep 6
+          for i in $(seq 1 30); do [ -f out/video.txt ] && break; sleep 2; done
           echo "===== video report"; cat out/video.txt || echo "no report"
           # 4. the other tabs (the library comes back from the cache)
           launch SIMCTL_CHILD_TEST_TAB=1; sleep 4; shoot 5-library

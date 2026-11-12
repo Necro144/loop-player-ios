@@ -40,8 +40,10 @@ final class Library: ObservableObject {
         var bad: Set<UUID> = []
         for i in folders.indices {
             var stale = false
-            guard let url = try? URL(resolvingBookmarkData: folders[i].bookmark, options: [], relativeTo: nil, bookmarkDataIsStale: &stale) else {
+            guard !folders[i].bookmark.isEmpty,
+                  let url = try? URL(resolvingBookmarkData: folders[i].bookmark, options: [], relativeTo: nil, bookmarkDataIsStale: &stale) else {
                 bad.insert(folders[i].id)
+                log("Could not reopen \(folders[i].name) from its bookmark")
                 continue
             }
             _ = url.startAccessingSecurityScopedResource()
@@ -57,28 +59,74 @@ final class Library: ObservableObject {
 
     func addFolders(_ urls: [URL]) {
         var added = 0
+        if urls.isEmpty { log("Picker returned no folder") }
         for url in urls {
-            let ok = url.startAccessingSecurityScopedResource()
-            do {
-                let bookmark = try url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
-                if let existing = folders.first(where: { folderURLs[$0.id]?.standardizedFileURL == url.standardizedFileURL }) {
-                    message = "\(existing.name) is already in your library."
-                    continue
-                }
-                let f = FolderSource(id: UUID(), name: url.lastPathComponent, bookmark: bookmark, added: Date())
-                folders.append(f)
-                folderURLs[f.id] = url
-                added += 1
-            } catch {
-                if ok { url.stopAccessingSecurityScopedResource() }
-                message = "Could not open \(url.lastPathComponent): \(error.localizedDescription)"
+            let access = url.startAccessingSecurityScopedResource()
+            log("Picked \(url.path) (access \(access ? "granted" : "not needed or refused"))")
+            if let existing = folders.first(where: { folderURLs[$0.id]?.standardizedFileURL == url.standardizedFileURL }) {
+                report("\(existing.name) is already in your library.")
+                continue
             }
+            // Remember the folder for next time. If the system will not make a bookmark,
+            // the folder still works until the app is closed, and the user is told.
+            var bookmark = Data()
+            do {
+                bookmark = try url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
+                log("Bookmark saved (\(bookmark.count) bytes)")
+            } catch {
+                log("Bookmark failed: \(error.localizedDescription)")
+                if let minimal = try? url.bookmarkData(options: .minimalBookmark, includingResourceValuesForKeys: nil, relativeTo: nil) {
+                    bookmark = minimal
+                    log("Minimal bookmark saved (\(minimal.count) bytes)")
+                } else {
+                    report("\(url.lastPathComponent) was added, but iOS would not let the app remember it. You may need to pick it again after closing the app.")
+                }
+            }
+            let f = FolderSource(id: UUID(), name: url.lastPathComponent, bookmark: bookmark, added: Date())
+            folders.append(f)
+            folderURLs[f.id] = url
+            added += 1
         }
         if added > 0 {
             JSONStore.save(folders, "folders.json")
             rescan()
         }
     }
+
+    /// Shows a message once any closing picker or sheet is out of the way
+    /// (an alert started while the picker is still closing is silently dropped by iOS).
+    private func report(_ text: String) {
+        log(text)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [weak self] in self?.message = text }
+    }
+
+    // MARK: Folder log (Settings > Folder Log), to see what happened on the phone
+
+    @Published private(set) var folderLog: [String] = (try? String(contentsOf: AppPaths.support.appendingPathComponent("folder-log.txt"), encoding: .utf8))?
+        .split(separator: "
+").map(String.init) ?? []
+
+    func log(_ line: String) {
+        let stamp = Self.stampFormatter.string(from: Date())
+        folderLog.append("\(stamp)  \(line)")
+        if folderLog.count > 80 { folderLog.removeFirst(folderLog.count - 80) }
+        let text = folderLog.joined(separator: "
+")
+        DispatchQueue.global(qos: .utility).async {
+            try? text.write(to: AppPaths.support.appendingPathComponent("folder-log.txt"), atomically: true, encoding: .utf8)
+        }
+    }
+
+    func clearLog() {
+        folderLog = []
+        try? FileManager.default.removeItem(at: AppPaths.support.appendingPathComponent("folder-log.txt"))
+    }
+
+    private static let stampFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "MMM d HH:mm:ss"
+        return f
+    }()
 
     func removeFolder(_ id: UUID) {
         folderURLs[id]?.stopAccessingSecurityScopedResource()
@@ -125,6 +173,11 @@ final class Library: ObservableObject {
 
     private func finishScan(_ result: [Track]) {
         isScanning = false
+        for f in folders {
+            let mine = result.filter { $0.folderID == f.id }
+            let waiting = mine.filter(\.isPlaceholder).count
+            log("Scanned \(f.name): \(mine.count) songs/videos" + (waiting > 0 ? ", \(waiting) still in iCloud (download when played)" : ""))
+        }
         setTracks(result, save: true)
     }
 

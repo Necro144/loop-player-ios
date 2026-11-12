@@ -34,16 +34,37 @@ jobs:
           xcrun simctl boot "$UDID"
           xcrun simctl bootstatus "$UDID" -b | tail -n 3
 
+      - name: Warm up and put Suno Songs in On My iPhone
+        run: |
+          # Opening the Files app once creates its On My iPhone storage and warms the simulator up.
+          xcrun simctl launch "$UDID" com.apple.DocumentsApp || true
+          sleep 25
+          xcrun simctl terminate "$UDID" com.apple.DocumentsApp || true
+          BASE=~/Library/Developer/CoreSimulator/Devices/$UDID/data/Containers/Shared/AppGroup
+          STORE=$(find "$BASE" -maxdepth 2 -type d -name "File Provider Storage" | head -1)
+          echo "On My iPhone storage: $STORE"
+          if [ -n "$STORE" ]; then
+            mkdir -p "$STORE/Suno Songs"
+            cp -R media/. "$STORE/Suno Songs/"
+            find "$STORE" -maxdepth 3 | head -20
+            echo "OUTSIDE_READY=1" >> "$GITHUB_ENV"
+          else
+            find "$BASE" -maxdepth 3 | head -40
+            echo "OUTSIDE_READY=0" >> "$GITHUB_ENV"
+          fi
+
       - name: Pick the folder with the real Files picker, tap Open, play
         run: |
           mkdir -p shots
-          TEST_RUNNER_SEED_DIR="$GITHUB_WORKSPACE/media" TEST_RUNNER_SHOTS_DIR="$GITHUB_WORKSPACE/shots" \
-          xcodebuild test -project LoopPlayer.xcodeproj -scheme LoopPlayer \
-            -destination "id=$UDID" -derivedDataPath uibuild -resultBundlePath result.xcresult \
-            CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="-" \
-            > test.log 2>&1; STATUS=$?
-          grep -E "error:|Test Case|failed|passed|XCTAssert|TEST (SUCCEEDED|FAILED)" test.log | head -n 80
+          for attempt in 1 2; do
+            TEST_RUNNER_SEED_DIR="$GITHUB_WORKSPACE/media" TEST_RUNNER_SHOTS_DIR="$GITHUB_WORKSPACE/shots"             TEST_RUNNER_OUTSIDE_READY="$OUTSIDE_READY"             xcodebuild test -project LoopPlayer.xcodeproj -scheme LoopPlayer               -destination "id=$UDID" -derivedDataPath uibuild -resultBundlePath "result$attempt.xcresult"               CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="-"               > test.log 2>&1; STATUS=$?
+            grep -E "error:|Test Case|skipped|XCTAssert|failed:|Testing failed|never began|TEST (SUCCEEDED|FAILED)" test.log | cut -c1-300 | head -n 60
+            if [ $STATUS -eq 0 ]; then break; fi
+            if ! grep -q "never began executing" test.log; then break; fi
+            echo "Test runner did not start; trying once more"
+          done
           ls shots
+          test "$OUTSIDE_READY" = "1" || { echo "On My iPhone storage was not found"; exit 1; }
           exit $STATUS
 
       - uses: actions/upload-artifact@v4

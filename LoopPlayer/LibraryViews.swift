@@ -776,6 +776,16 @@ struct SettingsView: View {
                 }
             }
 
+            Section {
+                NavigationLink {
+                    FolderLogView()
+                } label: {
+                    Label("Folder Log", systemImage: "doc.text.magnifyingglass")
+                }
+            } footer: {
+                Text("What happened when folders were picked and scanned. Useful if a folder does not show up.")
+            }
+
             Section("Playback") {
                 Picker("Repeat", selection: Binding(get: { player.repeatMode }, set: { player.setRepeat($0) })) {
                     Text("Off").tag(RepeatMode.off)
@@ -831,4 +841,35 @@ struct SettingsView: View {
 
 func rateLabel(_ r: Float) -> String {
     r == 1 ? "Normal" : (r == r.rounded() ? String(format: "%.0f×", r) : String(format: "%g×", r))
+}
+
+struct FolderLogView: View {
+    @EnvironmentObject var library: Library
+
+    var body: some View {
+        List {
+            if library.folderLog.isEmpty {
+                Text("Nothing logged yet.").foregroundColor(Theme.dim).listRowBackground(Theme.bg)
+            }
+            ForEach(Array(library.folderLog.enumerated().reversed()), id: \.offset) { _, line in
+                Text(line)
+                    .font(.caption.monospaced())
+                    .textSelection(.enabled)
+                    .listRowBackground(Theme.bg)
+            }
+        }
+        .darkList()
+        .navigationTitle("Folder Log")
+        .toolbar {
+            ToolbarItemGroup(placement: .navigationBarTrailing) {
+                Button { UIPasteboard.general.string = library.folderLog.joined(separator: "
+") } label: {
+                    Image(systemName: "doc.on.doc")
+                }
+                Button(role: .destructive) { library.clearLog() } label: {
+                    Image(systemName: "trash")
+                }
+            }
+        }
+    }
 }

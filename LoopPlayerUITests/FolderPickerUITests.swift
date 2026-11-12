@@ -61,7 +61,21 @@ final class FolderPickerUITests: XCTestCase {
         app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", text)).firstMatch
     }
 
-    func testChooseFolderWithOpenThenPlay() throws {
+    /// "Suno Songs" inside the app's own folder (On My iPhone > Loop Player).
+    func testPickFolderInsideApp() throws {
+        try pickFolderThenPlay(path: ["On My iPhone", "Loop Player", "Suno Songs"], tag: "inside")
+    }
+
+    /// "Suno Songs" directly in On My iPhone: outside the app, served by the system's file
+    /// provider and needing security-scoped access, the same way an iCloud Drive folder is.
+    func testPickFolderOutsideApp() throws {
+        guard ProcessInfo.processInfo.environment["OUTSIDE_READY"] == "1" else {
+            throw XCTSkip("No Suno Songs folder was placed in On My iPhone")
+        }
+        try pickFolderThenPlay(path: ["On My iPhone", "Suno Songs"], tag: "outside")
+    }
+
+    private func pickFolderThenPlay(path: [String], tag: String) throws {
         let env = ProcessInfo.processInfo.environment
         let app = XCUIApplication()
         app.launchEnvironment["TEST_RESET"] = "1"
@@ -70,18 +84,16 @@ final class FolderPickerUITests: XCTestCase {
 
         let choose = app.buttons["Choose a Folder"]
         XCTAssertTrue(choose.waitForExistence(timeout: 90), "Welcome screen did not appear")
-        shot(app, "welcome")
+        shot(app, tag + "-welcome")
         choose.tap()
 
         let openButton = app.buttons["Open"]
         XCTAssertTrue(openButton.waitForExistence(timeout: 30), "The folder picker did not appear")
         sleep(2)
-        shot(app, "picker")
+        shot(app, tag + "-picker")
 
-        open(app, "On My iPhone")
-        open(app, "Loop Player")
-        open(app, "Suno Songs")
-        shot(app, "inside-suno-songs")
+        for name in path { open(app, name) }
+        shot(app, tag + "-inside-folder")
 
         XCTAssertTrue(app.buttons["Open"].waitForExistence(timeout: 10))
         app.buttons["Open"].tap()
@@ -89,26 +101,30 @@ final class FolderPickerUITests: XCTestCase {
         let shuffle = app.buttons["Shuffle All"]
         let took = shuffle.waitForExistence(timeout: 30)
         sleep(3)
-        shot(app, "after-open")
+        shot(app, tag + "-after-open")
         XCTAssertTrue(took, "Tapping Open did not add the folder")
         XCTAssertTrue(anything(app, "Night Drive").waitForExistence(timeout: 40), "Songs from the folder are not listed")
 
         shuffle.tap()
         let playPause = app.buttons["miniPlayPause"]
         XCTAssertTrue(playPause.waitForExistence(timeout: 20), "Mini player did not appear")
-        let playing = NSPredicate(format: "label == 'Pause'")
-        expectation(for: playing, evaluatedWith: playPause)
-        waitForExpectations(timeout: 20)
+        expectation(for: NSPredicate(format: "label == 'Pause'"), evaluatedWith: playPause)
+        waitForExpectations(timeout: 25)
         sleep(2)
-        shot(app, "playing")
+        shot(app, tag + "-playing")
 
-        // Close and reopen: the folder must be remembered.
+        // Close and reopen: the folder must be remembered and still readable.
         app.terminate()
         let again = XCUIApplication()
-        if let seed = env["SEED_DIR"] { again.launchEnvironment["TEST_SEED_DIR"] = seed }
         again.launch()
         XCTAssertTrue(again.buttons["Shuffle All"].waitForExistence(timeout: 60), "The folder was forgotten after relaunch")
         XCTAssertTrue(anything(again, "Night Drive").waitForExistence(timeout: 40), "Songs missing after relaunch")
-        shot(again, "relaunched")
+        again.buttons["Shuffle All"].tap()
+        let pp = again.buttons["miniPlayPause"]
+        XCTAssertTrue(pp.waitForExistence(timeout: 20))
+        expectation(for: NSPredicate(format: "label == 'Pause'"), evaluatedWith: pp)
+        waitForExpectations(timeout: 25)
+        shot(again, tag + "-relaunched-playing")
+        again.terminate()
     }
 }

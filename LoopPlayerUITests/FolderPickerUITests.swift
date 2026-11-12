@@ -144,8 +144,12 @@ final class FolderPickerUITests: XCTestCase {
 
         let shuffle = app.buttons["Shuffle All"]
         XCTAssertTrue(shuffle.waitForExistence(timeout: 30), "Use This Folder did not add the folder")
-        XCTAssertTrue(anything(app, "Night Drive").waitForExistence(timeout: 60), "Songs from the folder are not listed")
+        sleep(3)
         shot(app, tag + "-added")
+        // A big library is listed at once by file name; tags (like "Night Drive") follow as they are read.
+        let listed = anything(app, "Night Drive").waitForExistence(timeout: bigLibrary ? 240 : 60)
+        shot(app, tag + "-tags")
+        XCTAssertTrue(listed, "Songs from the folder are not listed")
 
         // The app must stay usable while it scans: play straight away.
         shuffle.tap()

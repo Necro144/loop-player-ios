@@ -862,8 +862,7 @@ struct FolderLogView: View {
         .navigationTitle("Folder Log")
         .toolbar {
             ToolbarItemGroup(placement: .navigationBarTrailing) {
-                Button { UIPasteboard.general.string = library.folderLog.joined(separator: "
-") } label: {
+                Button { UIPasteboard.general.string = library.folderLog.joined(separator: "\n") } label: {
                     Image(systemName: "doc.on.doc")
                 }
                 Button(role: .destructive) { library.clearLog() } label: {

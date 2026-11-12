@@ -97,21 +97,22 @@ final class Library: ObservableObject {
     /// (an alert started while the picker is still closing is silently dropped by iOS).
     private func report(_ text: String) {
         log(text)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [weak self] in self?.message = text }
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 900_000_000)
+            self?.message = text
+        }
     }
 
     // MARK: Folder log (Settings > Folder Log), to see what happened on the phone
 
     @Published private(set) var folderLog: [String] = (try? String(contentsOf: AppPaths.support.appendingPathComponent("folder-log.txt"), encoding: .utf8))?
-        .split(separator: "
-").map(String.init) ?? []
+        .split(separator: "\n").map(String.init) ?? []
 
     func log(_ line: String) {
         let stamp = Self.stampFormatter.string(from: Date())
         folderLog.append("\(stamp)  \(line)")
         if folderLog.count > 80 { folderLog.removeFirst(folderLog.count - 80) }
-        let text = folderLog.joined(separator: "
-")
+        let text = folderLog.joined(separator: "\n")
         DispatchQueue.global(qos: .utility).async {
             try? text.write(to: AppPaths.support.appendingPathComponent("folder-log.txt"), atomically: true, encoding: .utf8)
         }

@@ -377,6 +377,7 @@ enum Scanner {
                 unique.append(e)
             }
         }
+        resetFailures()
         let total = unique.count
         let waiting = unique.filter(\.placeholder).count
         FolderLog.append("Found \(total) songs/videos" + (waiting > 0 ? " (\(waiting) not downloaded yet, read when played)" : "") + ", reading them")
@@ -534,6 +535,24 @@ enum Scanner {
         }
     }
 
+    private static let failLock = NSLock()
+    private static var failures = 0
+
+    /// Logs the first few files that could not be read in a scan (so one bad folder cannot flood the log).
+    static func noteFailure(_ text: String) {
+        failLock.lock()
+        failures += 1
+        let n = failures
+        failLock.unlock()
+        if n <= 8 { FolderLog.append(text) } else if n == 9 { FolderLog.append("More files could not be read (not all are listed)") }
+    }
+
+    static func resetFailures() {
+        failLock.lock()
+        failures = 0
+        failLock.unlock()
+    }
+
     /// A track made from the file name only.
     static func basic(_ e: Entry) -> Track {
         let ext = (e.relativePath as NSString).pathExtension.lowercased()
@@ -555,7 +574,13 @@ enum Scanner {
 
         let asset = AVURLAsset(url: e.url, options: [AVURLAssetPreferPreciseDurationAndTimingKey: false])
         var artData: Data?
-        if let items = try? await asset.load(.commonMetadata) {
+        var items: [AVMetadataItem]?
+        do {
+            items = try await asset.load(.commonMetadata)
+        } catch {
+            Scanner.noteFailure("Could not read the tags of \(e.relativePath): \(error.localizedDescription) [\((error as NSError).domain) \((error as NSError).code)]")
+        }
+        if let items {
             var creator = ""
             for item in items {
                 guard let key = item.commonKey else { continue }
@@ -577,6 +602,7 @@ enum Scanner {
             if t.artist.isEmpty && !creator.isEmpty { t.artist = creator }
         }
         if let d = try? await asset.load(.duration) {
+            if !d.isNumeric { Scanner.noteFailure("No length for \(e.relativePath)") }
             let s = CMTimeGetSeconds(d)
             if s.isFinite { t.duration = s }
         }

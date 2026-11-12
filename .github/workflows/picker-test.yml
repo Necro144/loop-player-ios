@@ -41,7 +41,13 @@ jobs:
           sleep 25
           xcrun simctl terminate "$UDID" com.apple.DocumentsApp || true
           BASE=~/Library/Developer/CoreSimulator/Devices/$UDID/data/Containers/Shared/AppGroup
-          STORE=$(find "$BASE" -maxdepth 2 -type d -name "File Provider Storage" | head -1)
+          # The On My iPhone group is the one whose metadata names group.com.apple.FileProvider.LocalStorage.
+          STORE=""
+          for G in "$BASE"/*; do
+            ID=$(plutil -extract MCMMetadataIdentifier raw "$G/.com.apple.mobile_container_manager.metadata.plist" 2>/dev/null || true)
+            if [ "$ID" = "group.com.apple.FileProvider.LocalStorage" ]; then STORE="$G/File Provider Storage"; mkdir -p "$STORE"; fi
+          done
+          [ -n "$STORE" ] || STORE=$(find "$BASE" -maxdepth 2 -type d -name "File Provider Storage" | head -1)
           echo "On My iPhone storage: $STORE"
           if [ -n "$STORE" ]; then
             mkdir -p "$STORE/Suno Songs"

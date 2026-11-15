@@ -9,6 +9,7 @@ struct NowPlayingView: View {
     @State private var pickIDs: TrackIDs?
     @State private var info: Track?
     @State private var seekFlash: String?
+    @State private var showSpeed = false
 
     var body: some View {
         GeometryReader { geo in
@@ -23,7 +24,7 @@ struct NowPlayingView: View {
                     Spacer(minLength: 12)
                     titleRow(t)
                         .padding(.horizontal, 24)
-                    Scrubber(player: player)
+                    Scrubber(player: player, loopA: player.loopA, loopB: player.loopB)
                         .padding(.horizontal, 24)
                         .padding(.top, 14)
                     controls
@@ -39,6 +40,7 @@ struct NowPlayingView: View {
         .preferredColorScheme(.dark)
         .presentationDragIndicator(.visible)
         .sheet(isPresented: $showQueue) { QueueView() }
+        .sheet(isPresented: $showSpeed) { SpeedSheet() }
         .sheet(item: $pickIDs) { box in PlaylistPickerView(ids: box.ids) }
         .sheet(item: $info) { t in TrackInfoView(track: t) }
         .fullScreenCover(isPresented: $videoFullScreen) { FullScreenVideoView() }
@@ -202,16 +204,14 @@ struct NowPlayingView: View {
 
     private func bottomBar(_ t: Track?) -> some View {
         HStack {
-            Menu {
-                Picker("Speed", selection: Binding(get: { player.rate }, set: { player.setRate($0) })) {
-                    ForEach(Player.rates, id: \.self) { r in Text(rateLabel(r)).tag(r) }
-                }
-            } label: {
+            Button { showSpeed = true } label: {
                 Text(player.rate == 1 ? "1×" : String(format: "%g×", player.rate))
                     .font(.subheadline.weight(.bold))
                     .foregroundColor(player.rate == 1 ? .white.opacity(0.8) : Theme.accent)
-                    .frame(width: 44, height: 36)
+                    .frame(minWidth: 44, minHeight: 36)
             }
+            Spacer()
+            ABLoopButton()
             Spacer()
             SleepMenu()
             Spacer()
@@ -278,9 +278,123 @@ struct SleepCountdown: View {
     }
 }
 
+/// A-B loop: tap at the start of a part, tap at its end, and that part repeats. Tap again to stop.
+struct ABLoopButton: View {
+    @EnvironmentObject var player: Player
+
+    var body: some View {
+        Button { player.abTap() } label: {
+            HStack(spacing: 1) {
+                Text("A").foregroundColor(player.loopA != nil ? Theme.accent : .white.opacity(0.85))
+                Text("-").foregroundColor(.white.opacity(0.6))
+                Text("B").foregroundColor(player.loopB != nil ? Theme.accent : .white.opacity(0.85))
+            }
+            .font(.subheadline.weight(.heavy))
+            .padding(.horizontal, 8)
+            .frame(minWidth: 44, minHeight: 32)
+            .background(player.loopB != nil ? Theme.accent.opacity(0.22) : .clear, in: Capsule())
+        }
+        .accessibilityLabel(player.loopA == nil ? "Set loop start A" : (player.loopB == nil ? "Set loop end B" : "Turn off A-B loop"))
+    }
+}
+
+/// Fine speed control, and whether the pitch moves with the speed.
+struct SpeedSheet: View {
+    @EnvironmentObject var player: Player
+    @Environment(\.dismiss) private var dismiss
+    @State private var value: Float = 1
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    VStack(spacing: 10) {
+                        Text(String(format: "%.2f×", value))
+                            .font(.system(size: 40, weight: .bold).monospacedDigit())
+                            .foregroundColor(value == 1 ? .white : Theme.accent)
+                        HStack(spacing: 12) {
+                            stepButton("minus", -0.05)
+                            Slider(value: $value, in: Player.rateRange, step: 0.05, onEditingChanged: { editing in
+                                if !editing { player.setRate(value) }
+                            })
+                            .tint(Theme.accent)
+                            stepButton("plus", 0.05)
+                        }
+                        HStack(spacing: 8) {
+                            ForEach(Player.rates, id: \.self) { r in
+                                Button {
+                                    value = r
+                                    player.setRate(r)
+                                } label: {
+                                    Text(String(format: "%g", r))
+                                        .font(.caption.weight(.bold))
+                                        .frame(maxWidth: .infinity, minHeight: 30)
+                                        .background(abs(value - r) < 0.001 ? Theme.accent.opacity(0.3) : Theme.surface2,
+                                                    in: RoundedRectangle(cornerRadius: 8))
+                                        .foregroundColor(.white)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                    .padding(.vertical, 6)
+                    .listRowBackground(Theme.surface)
+                } header: {
+                    Text("Speed")
+                }
+
+                Section {
+                    Picker("Pitch", selection: Binding(get: { player.keepPitch }, set: { player.setKeepPitch($0) })) {
+                        Text("Keep pitch").tag(true)
+                        Text("Change pitch").tag(false)
+                    }
+                    .pickerStyle(.segmented)
+                    .listRowBackground(Theme.surface)
+                } header: {
+                    Text("Pitch")
+                } footer: {
+                    Text(player.keepPitch
+                         ? "Keep pitch: slower or faster, but the voice and notes stay the same (time-stretch)."
+                         : "Change pitch: like a tape or a slowed video. Slower sounds deeper, faster sounds higher.")
+                }
+            }
+            .listStyle(.insetGrouped)
+            .scrollContentBackground(.hidden)
+            .background(Theme.bg)
+            .navigationTitle("Playback Speed")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Reset") { value = 1; player.setRate(1) }
+                }
+                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .preferredColorScheme(.dark)
+        .onAppear { value = player.rate }
+    }
+
+    private func stepButton(_ icon: String, _ delta: Float) -> some View {
+        Button {
+            value = min(max(((value + delta) * 100).rounded() / 100, Player.rateRange.lowerBound), Player.rateRange.upperBound)
+            player.setRate(value)
+        } label: {
+            Image(systemName: icon)
+                .font(.headline)
+                .frame(width: 36, height: 36)
+                .background(Theme.surface2, in: Circle())
+                .foregroundColor(.white)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 /// Seek bar. It watches only the clock, so the rest of the screen does not redraw while a song plays.
 struct Scrubber: View {
     let player: Player
+    var loopA: Double? = nil
+    var loopB: Double? = nil
     @EnvironmentObject var clock: PlaybackClock
     @State private var dragValue: Double?
 
@@ -292,6 +406,13 @@ struct Scrubber: View {
             GeometryReader { g in
                 ZStack(alignment: .leading) {
                     Capsule().fill(Color.white.opacity(0.18)).frame(height: dragValue == nil ? 5 : 9)
+                    if let a = loopA {
+                        let fa = min(1, max(0, a / duration))
+                        let fb = loopB.map { min(1, max(0, $0 / duration)) } ?? fa
+                        Rectangle().fill(Theme.accent.opacity(0.45))
+                            .frame(width: max(3, g.size.width * (fb - fa)), height: 13)
+                            .offset(x: g.size.width * fa)
+                    }
                     Capsule().fill(dragValue == nil ? Color.white : Theme.accent)
                         .frame(width: max(5, g.size.width * fraction), height: dragValue == nil ? 5 : 9)
                     Circle().fill(.white)
@@ -345,7 +466,7 @@ struct Backdrop: View {
             }
             .clipped()
             .ignoresSafeArea()
-        .task(id: track?.id) {
+        .task(id: (track?.id ?? "") + (track?.hasArtwork == true ? "1" : "0")) {
             guard let track else { image = nil; return }
             let img = await ArtworkCache.shared.image(for: track)
             withAnimation(.easeInOut(duration: 0.4)) { image = img }

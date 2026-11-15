@@ -2,6 +2,7 @@ import Foundation
 import AVFoundation
 import UIKit
 import ImageIO
+import QuickLookThumbnailing
 
 /// The chosen folders and every track found in them. Scanning runs off the main thread and
 /// the result is cached, so the next launch shows the library at once and only changed files are read again.
@@ -238,6 +239,52 @@ final class Library: ObservableObject {
             log("Scanned \(f.name): \(mine.count) songs/videos" + (waiting > 0 ? ", \(waiting) still in iCloud (download when played)" : ""))
         }
         setTracks(result, save: true)
+        fillMissingThumbnails()
+    }
+
+    private var thumbTried: Set<String> = []
+    private var thumbTask: Task<Void, Never>?
+
+    /// Videos still without a picture after the scan (not downloaded from iCloud yet, or too slow to
+    /// read in time) get one now, one at a time: a frame from the video when the file is on the phone,
+    /// otherwise the preview iCloud keeps for it. Each video is tried once per app launch.
+    func fillMissingThumbnails() {
+        thumbTask?.cancel()
+        let todo = tracks.filter { t in
+            !thumbTried.contains(t.id) && ((t.isVideo && !t.hasArtwork) || (t.duration <= 0 && !t.isPlaceholder))
+        }
+        guard !todo.isEmpty else { return }
+        for t in todo { thumbTried.insert(t.id) }
+        let roots = folderURLs
+        FolderLog.append("Making pictures for \(todo.count) videos/songs without one")
+        thumbTask = Task.detached(priority: .utility) { [weak self] in
+            var made = 0
+            for t in todo {
+                if Task.isCancelled { return }
+                guard let root = roots[t.folderID] else { continue }
+                let url = root.appendingPathComponent(t.relativePath)
+                if !t.isPlaceholder {
+                    let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+                    let entry = Scanner.Entry(folderID: t.folderID, url: url, relativePath: t.relativePath,
+                                              size: Int64(values?.fileSize ?? Int(t.fileSize)),
+                                              modified: values?.contentModificationDate ?? t.modified,
+                                              placeholder: false)
+                    var fresh = await Scanner.readLimited(entry)
+                    guard fresh.duration > 0 || fresh.hasArtwork else { continue }
+                    fresh.added = t.added
+                    if fresh.hasArtwork { made += 1 }
+                    await self?.replace(fresh)
+                } else if t.isVideo, let jpg = await Thumbnail.systemThumbnail(url) {
+                    try? jpg.write(to: AppPaths.artworkFile(for: t.id), options: .atomic)
+                    var fresh = t
+                    fresh.hasArtwork = true
+                    made += 1
+                    await MainActor.run { ArtworkCache.shared.forget(t.id) }
+                    await self?.replace(fresh)
+                }
+            }
+            FolderLog.append("Pictures made: \(made) of \(todo.count)")
+        }
     }
 
     /// Reads the tags again for one file, e.g. after an iCloud file finished downloading.
@@ -650,13 +697,73 @@ enum Thumbnail {
         return UIImage(cgImage: cg).jpegData(compressionQuality: 0.85)
     }
 
+    /// A frame from the video for its thumbnail. Song videos often open on black, so a few
+    /// moments are tried and the first one that is not (nearly) black wins.
     static func videoFrame(_ asset: AVAsset, duration: Double) async -> Data? {
         let gen = AVAssetImageGenerator(asset: asset)
         gen.appliesPreferredTrackTransform = true
         gen.maximumSize = CGSize(width: 700, height: 700)
-        let at = duration > 4 ? min(duration * 0.2, 20) : 0
-        guard let result = try? await gen.image(at: CMTime(seconds: at, preferredTimescale: 600)) else { return nil }
-        return UIImage(cgImage: result.image).jpegData(compressionQuality: 0.8)
+        gen.requestedTimeToleranceBefore = CMTime(seconds: 1, preferredTimescale: 600)
+        gen.requestedTimeToleranceAfter = CMTime(seconds: 1, preferredTimescale: 600)
+        var d = duration
+        if d <= 0, let loaded = try? await asset.load(.duration) {
+            let s = CMTimeGetSeconds(loaded)
+            if s.isFinite { d = s }
+        }
+        var times: [Double] = d > 4 ? [min(d * 0.25, 30), d * 0.5, min(d * 0.1, 8), 2, 0] : [0]
+        times = times.map { max(0, min($0, max(0, d - 0.5))) }
+        var best: (CGImage, Double)?
+        for t in times {
+            guard let cg = try? await gen.image(at: CMTime(seconds: t, preferredTimescale: 600)).image else { continue }
+            let light = brightness(cg)
+            if light > 0.09 { return UIImage(cgImage: cg).jpegData(compressionQuality: 0.8) }
+            if best == nil || light > best!.1 { best = (cg, light) }
+        }
+        return best.map { UIImage(cgImage: $0.0).jpegData(compressionQuality: 0.8) } ?? nil
+    }
+
+    /// Average brightness 0...1, measured on an 8x8 copy.
+    static func brightness(_ cg: CGImage) -> Double {
+        let w = 8, h = 8
+        var px = [UInt8](repeating: 0, count: w * h * 4)
+        let drawn = px.withUnsafeMutableBytes { buf -> Bool in
+            guard let ctx = CGContext(data: buf.baseAddress, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                                      space: CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        guard drawn else { return 1 }
+        var sum = 0.0
+        for i in stride(from: 0, to: px.count, by: 4) {
+            sum += 0.299 * Double(px[i]) + 0.587 * Double(px[i + 1]) + 0.114 * Double(px[i + 2])
+        }
+        return sum / Double(w * h) / 255
+    }
+
+    /// The thumbnail iOS itself shows in the Files app. Works for iCloud videos that are not on
+    /// the phone yet (iCloud sends a small preview), so they get a picture without downloading.
+    static func systemThumbnail(_ url: URL, seconds: Double = 15) async -> Data? {
+        let request = QLThumbnailGenerator.Request(fileAt: url, size: CGSize(width: 350, height: 350),
+                                                   scale: 2, representationTypes: .thumbnail)
+        return await withCheckedContinuation { (cont: CheckedContinuation<Data?, Never>) in
+            let lock = NSLock()
+            var done = false
+            func finish(_ d: Data?) {
+                lock.lock()
+                let first = !done
+                done = true
+                lock.unlock()
+                if first { cont.resume(returning: d) }
+            }
+            QLThumbnailGenerator.shared.generateBestRepresentation(for: request) { rep, _ in
+                finish(rep?.uiImage.jpegData(compressionQuality: 0.8))
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + seconds) {
+                QLThumbnailGenerator.shared.cancel(request)
+                finish(nil)
+            }
+        }
     }
 }
 

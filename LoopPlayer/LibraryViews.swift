@@ -538,6 +538,8 @@ struct SearchView: View {
 
 struct PlaylistsView: View {
     @EnvironmentObject var store: UserStore
+    @EnvironmentObject var yt: YouTubeStore
+    @State private var importingYT = false
     @State private var naming = false
     @State private var newName = ""
 
@@ -572,9 +574,25 @@ struct PlaylistsView: View {
             .onDelete { offsets in
                 for o in offsets { store.deletePlaylist(store.playlists[o].id) }
             }
+            Section {
+                YouTubeImportRow(importing: $importingYT)
+                    .listRowBackground(Theme.bg)
+                ForEach(yt.playlists) { p in
+                    NavigationLink { YouTubePlaylistView(playlistID: p.id) } label: {
+                        YouTubePlaylistRow(playlist: p)
+                    }
+                    .listRowBackground(Theme.bg)
+                }
+                .onDelete { offsets in
+                    for o in offsets { yt.delete(yt.playlists[o].id) }
+                }
+            } header: {
+                Text("YouTube")
+            }
         }
         .darkList()
         .navigationTitle("Playlists")
+        .sheet(isPresented: $importingYT) { YouTubeImportSheet() }
         .alert("New Playlist", isPresented: $naming) {
             TextField("Name", text: $newName)
             Button("Cancel", role: .cancel) { newName = "" }
@@ -727,6 +745,7 @@ struct SettingsView: View {
     @EnvironmentObject var store: UserStore
     @State private var confirmClear = false
     @State private var removing: FolderSource?
+    @State private var showSpeed = false
 
     var body: some View {
         List {
@@ -796,19 +815,29 @@ struct SettingsView: View {
                 Text("What happened when folders were picked and scanned. Useful if a folder does not show up.")
             }
 
-            Section("Playback") {
+            Section {
                 Picker("Repeat", selection: Binding(get: { player.repeatMode }, set: { player.setRepeat($0) })) {
                     Text("Off").tag(RepeatMode.off)
                     Text("All").tag(RepeatMode.all)
                     Text("One (loop)").tag(RepeatMode.one)
                 }
                 Toggle("Shuffle", isOn: Binding(get: { player.shuffle }, set: { player.setShuffle($0) }))
-                Picker("Speed", selection: Binding(get: { player.rate }, set: { player.setRate($0) })) {
-                    ForEach(Player.rates, id: \.self) { r in Text(rateLabel(r)).tag(r) }
+                Button { showSpeed = true } label: {
+                    HStack {
+                        Text("Speed").foregroundColor(.white)
+                        Spacer()
+                        Text(rateLabel(player.rate)).foregroundColor(Theme.dim)
+                    }
                 }
+                Toggle("Keep pitch when changing speed", isOn: Binding(get: { player.keepPitch }, set: { player.setKeepPitch($0) }))
+                Toggle("Play along with other apps", isOn: Binding(get: { player.mixWithOthers }, set: { player.setMixWithOthers($0) }))
                 Button(role: .destructive) { store.clearRecent() } label: {
                     Label("Clear Recently Played", systemImage: "clock.arrow.circlepath")
                 }
+            } header: {
+                Text("Playback")
+            } footer: {
+                Text("Keep pitch off: slowing down sounds deeper, like a tape. \"Play along with other apps\" keeps the music going when another app plays sound, but iOS then hides the lock screen controls.")
             }
 
             Section("About") {
@@ -817,7 +846,7 @@ struct SettingsView: View {
                     Spacer()
                     Text(appVersion).foregroundColor(Theme.dim)
                 }
-                Text("Loop Player plays your own music and video files. No accounts, no streaming, nothing leaves the phone.")
+                Text("Loop Player plays your own music and video files. No accounts, and your files never leave the phone. YouTube playlists play through YouTube's own player.")
                     .font(.footnote)
                     .foregroundColor(Theme.dim)
                 Text("Made by Necro")
@@ -829,6 +858,7 @@ struct SettingsView: View {
         .scrollContentBackground(.hidden)
         .background(Theme.bg)
         .navigationTitle("Settings")
+        .sheet(isPresented: $showSpeed) { SpeedSheet() }
         .confirmationDialog("Read every file again and redraw the artwork? This can take a while on big libraries.", isPresented: $confirmClear, titleVisibility: .visible) {
             Button("Rebuild") { library.clearArtworkCache() }
         }

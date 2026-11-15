@@ -64,6 +64,7 @@ struct LoopPlayerApp: App {
                 .environmentObject(player.clock)
                 .environmentObject(store)
                 .environmentObject(ui)
+                .environmentObject(YouTubeStore.shared)
                 .preferredColorScheme(.dark)
                 .tint(Theme.accent)
         }

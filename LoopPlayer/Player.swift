@@ -35,8 +35,16 @@ final class Player: ObservableObject {
     @Published private(set) var sleepAtTrackEnd = false
     @Published var showFullPlayer = false
     @Published var toast: String?
+    /// true: speed changes keep the pitch (time-stretch). false: pitch follows speed, like a tape.
+    @Published private(set) var keepPitch: Bool = UserDefaults.standard.object(forKey: "keepPitch") as? Bool ?? true
+    /// Play together with other apps' sound (the lock screen controls then go away).
+    @Published private(set) var mixWithOthers: Bool = UserDefaults.standard.bool(forKey: "mixWithOthers")
+    /// A-B loop points in seconds, for the current song only.
+    @Published private(set) var loopA: Double?
+    @Published private(set) var loopB: Double?
 
     static let rates: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
+    static let rateRange: ClosedRange<Float> = 0.5...2.0
 
     /// Queue order before shuffle was turned on.
     private var original: [Track] = []
@@ -52,6 +60,13 @@ final class Player: ObservableObject {
     private var failures = 0
     private var lastSave = Date.distantPast
     private var countedPlay: String?
+    /// Set when the pause came from the user (or the app on purpose: sleep timer, unplugged headphones,
+    /// end of the queue). A pause without it, while in the background, is iOS pausing a video: resumed.
+    private var userPaused = true
+    private var interrupted = false
+    private var lastAutoResume = Date.distantPast
+    private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
+    private var loopObserver: Any?
 
     var current: Track? { queue.indices.contains(index) ? queue[index] : nil }
     var upNext: [Track] { index + 1 < queue.count ? Array(queue[(index + 1)...]) : [] }
@@ -163,9 +178,12 @@ final class Player: ObservableObject {
             load(index, autoplay: true, at: clock.time)
             return
         }
+        userPaused = false
+        interrupted = false
         activateSession()
         avPlayer.defaultRate = rate
         avPlayer.playImmediately(atRate: rate)
+        endBackgroundTask()
         if let t = current, countedPlay != t.id {
             countedPlay = t.id
             UserStore.shared.markPlayed(t.id)
@@ -173,8 +191,15 @@ final class Player: ObservableObject {
     }
 
     func pause() {
-        avPlayer.pause()
+        halt()
         saveState(force: true)
+    }
+
+    /// Pauses on purpose (never auto-resumed).
+    private func halt() {
+        userPaused = true
+        avPlayer.pause()
+        endBackgroundTask()
     }
 
     func next() {
@@ -207,7 +232,8 @@ final class Player: ObservableObject {
     func skip(by seconds: Double) { seek(to: clock.time + seconds) }
 
     func stop() {
-        avPlayer.pause()
+        halt()
+        clearLoop()
         avPlayer.replaceCurrentItem(with: nil)
         queue = []
         original = []
@@ -262,11 +288,77 @@ final class Player: ObservableObject {
     }
 
     func setRate(_ r: Float) {
+        let r = min(max((r * 100).rounded() / 100, Player.rateRange.lowerBound), Player.rateRange.upperBound)
         rate = r
         avPlayer.defaultRate = r
         if isPlaying { avPlayer.rate = r }
         updateNowPlaying()
         saveState(force: true)
+    }
+
+    var pitchAlgorithm: AVAudioTimePitchAlgorithm { keepPitch ? .spectral : .varispeed }
+
+    func setKeepPitch(_ on: Bool) {
+        keepPitch = on
+        UserDefaults.standard.set(on, forKey: "keepPitch")
+        if let item = avPlayer.currentItem {
+            item.audioTimePitchAlgorithm = pitchAlgorithm
+            // Re-apply the rate so the new mode is heard at once.
+            if isPlaying { avPlayer.rate = rate }
+        }
+        toast = on ? "Speed keeps the pitch" : "Pitch follows speed (like a tape)"
+    }
+
+    func setMixWithOthers(_ on: Bool) {
+        mixWithOthers = on
+        UserDefaults.standard.set(on, forKey: "mixWithOthers")
+        configureSession()
+        if isPlaying { activateSession() }
+        if !on { updateNowPlaying() }
+    }
+
+    // MARK: A-B loop
+
+    /// First tap marks A, second marks B (the part between them repeats), third clears.
+    func abTap() {
+        if loopA == nil {
+            loopA = clock.time
+            toast = "A set at \(formatTime(clock.time)). Tap again at the end of the part."
+        } else if loopB == nil, let a = loopA {
+            let b = clock.time
+            guard b > a + 0.5 else {
+                toast = "B must be after A"
+                return
+            }
+            loopB = b
+            installLoopObserver()
+            toast = "Looping \(formatTime(a)) – \(formatTime(b))"
+            seek(to: a)
+        } else {
+            clearLoop()
+            toast = "A-B loop off"
+        }
+    }
+
+    func clearLoop() {
+        loopA = nil
+        loopB = nil
+        if let loopObserver { avPlayer.removeTimeObserver(loopObserver) }
+        loopObserver = nil
+    }
+
+    private func installLoopObserver() {
+        if let loopObserver { avPlayer.removeTimeObserver(loopObserver) }
+        loopObserver = nil
+        guard let b = loopB else { return }
+        loopObserver = avPlayer.addBoundaryTimeObserver(forTimes: [NSValue(time: CMTime(seconds: b, preferredTimescale: 600))], queue: .main) { [weak self] in
+            Task { @MainActor in self?.loopBack() }
+        }
+    }
+
+    private func loopBack() {
+        guard let a = loopA, loopB != nil else { return }
+        seek(to: a)
     }
 
     // MARK: Sleep timer
@@ -322,6 +414,10 @@ final class Player: ObservableObject {
         loadToken += 1
         let token = loadToken
         countedPlay = nil
+        clearLoop()
+        // Keeps the app running in the background while the next file is opened (or downloaded from
+        // iCloud). Without it iOS can suspend the silent app here, and the music stops.
+        if autoplay { beginBackgroundTask() }
         clock.time = seconds
         clock.duration = track.duration
         clock.buffering = false
@@ -343,7 +439,7 @@ final class Player: ObservableObject {
                 return
             }
             let item = AVPlayerItem(url: url)
-            item.audioTimePitchAlgorithm = .spectral
+            item.audioTimePitchAlgorithm = self.pitchAlgorithm
             self.watch(item, token: token)
             self.avPlayer.replaceCurrentItem(with: item)
             if seconds > 0.5 {
@@ -351,8 +447,11 @@ final class Player: ObservableObject {
                                              toleranceBefore: .zero, toleranceAfter: .zero)
             }
             guard token == self.loadToken else { return }
-            if autoplay { self.resume() }
-            if track.isPlaceholder { Library.shared.refresh(track.id) }
+            if autoplay { self.resume() } else { self.endBackgroundTask() }
+            // The file is on the phone now: read its tags and grab a video frame if that never worked.
+            if track.isPlaceholder || track.duration <= 0 || (track.isVideo && !track.hasArtwork) {
+                Library.shared.refresh(track.id)
+            }
             self.prefetchNext()
         }
     }
@@ -381,6 +480,7 @@ final class Player: ObservableObject {
             failures = 0
             let d = CMTimeGetSeconds(duration)
             if d.isFinite && d > 0 { clock.duration = d }
+            if inBackground { setVideoTracks(enabled: false) }
             updateNowPlaying()
         case .failed:
             failed(t, "Can't play \(t.fileName)")
@@ -401,14 +501,14 @@ final class Player: ObservableObject {
                 self.next()
             }
         } else {
-            avPlayer.pause()
+            halt()
         }
     }
 
     private func itemEnded() {
         if sleepAtTrackEnd {
             sleepAtTrackEnd = false
-            avPlayer.pause()
+            halt()
             seek(to: 0)
             return
         }
@@ -428,15 +528,52 @@ final class Player: ObservableObject {
             if index + 1 < queue.count {
                 next()
             } else {
-                avPlayer.pause()
+                halt()
                 seek(to: 0)
             }
         }
     }
 
+    /// Downloads the next song from iCloud while this one plays, so the switch needs no wait.
     private func prefetchNext() {
-        guard index + 1 < queue.count, let url = Library.shared.url(for: queue[index + 1]) else { return }
+        let nextIndex = index + 1 < queue.count ? index + 1 : (repeatMode == .all ? 0 : -1)
+        guard queue.indices.contains(nextIndex), let url = Library.shared.url(for: queue[nextIndex]) else { return }
         FileAccess.prefetch(url)
+    }
+
+    // MARK: Background
+
+    private func beginBackgroundTask() {
+        guard backgroundTask == .invalid else { return }
+        backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "LoopPlayer.load") { [weak self] in
+            Task { @MainActor in self?.endBackgroundTask() }
+        }
+    }
+
+    private func endBackgroundTask() {
+        guard backgroundTask != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(backgroundTask)
+        backgroundTask = .invalid
+    }
+
+    /// iOS pauses players whose item shows video when the app leaves the screen. Turning the
+    /// picture off in the background makes the item audio-only, so the sound keeps going.
+    private func setVideoTracks(enabled: Bool) {
+        guard let item = avPlayer.currentItem else { return }
+        for t in item.tracks where t.assetTrack?.mediaType == .video {
+            t.isEnabled = enabled
+        }
+    }
+
+    /// The player stopped although nobody asked it to (iOS pausing a video in the background):
+    /// start it again, at most once every few seconds so it can never fight the system.
+    private func unexpectedPause() {
+        guard !userPaused, !interrupted, !isPreparing, avPlayer.currentItem != nil,
+              Date().timeIntervalSince(lastAutoResume) > 3 else { return }
+        lastAutoResume = Date()
+        FolderLog.append("Playback stopped by iOS in the background; started again")
+        setVideoTracks(enabled: !inBackground)
+        resume()
     }
 
     // MARK: Video surfaces
@@ -458,6 +595,8 @@ final class Player: ObservableObject {
             Task { @MainActor in
                 guard let self, s.isFinite, !self.isPreparing else { return }
                 self.clock.time = s
+                // Backup for the A-B boundary observer (e.g. after seeking past B).
+                if let a = self.loopA, let b = self.loopB, s > b + 0.3 { self.seek(to: a) }
                 self.saveState(force: false)
             }
         }
@@ -470,6 +609,14 @@ final class Player: ObservableObject {
                 if playing != self.isPlaying {
                     self.isPlaying = playing
                     self.updateNowPlayingTime()
+                }
+                if !playing && self.inBackground && !self.userPaused {
+                    // Give the end-of-song handler the first word, then check again.
+                    try? await Task.sleep(nanoseconds: 600_000_000)
+                    guard self.avPlayer.timeControlStatus == .paused, self.inBackground,
+                          let item = self.avPlayer.currentItem,
+                          CMTimeGetSeconds(item.currentTime()) < self.clock.duration - 1 else { return }
+                    self.unexpectedPause()
                 }
             }
         }
@@ -500,24 +647,42 @@ final class Player: ObservableObject {
                   let reason = AVAudioSession.RouteChangeReason(rawValue: raw) else { return }
             if reason == .oldDeviceUnavailable {
                 // Headphones unplugged / Bluetooth gone: pause like the Music app.
-                Task { @MainActor in self?.pause() }
+                Task { @MainActor in
+                    FolderLog.append("Headphones or Bluetooth disconnected: paused")
+                    self?.pause()
+                }
             }
         }
         nc.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.configureSession() }
+            // The audio system restarted: everything has to be set up again.
+            Task { @MainActor in
+                guard let self else { return }
+                FolderLog.append("iOS audio services were reset; reloading the song")
+                let wasPlaying = !self.userPaused
+                self.configureSession()
+                self.avPlayer.replaceCurrentItem(with: nil)
+                self.load(self.index, autoplay: wasPlaying, at: self.clock.time)
+            }
         }
+        // The picture is taken off before the app leaves the screen: some iOS versions pause a
+        // player that still has a video layer at that moment.
         nc.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
                 self.inBackground = true
                 self.setSurfacesAttached(false)
+                self.setVideoTracks(enabled: false)
                 self.saveState(force: true)
+                if !self.userPaused && self.avPlayer.timeControlStatus == .paused && !self.isPreparing {
+                    self.unexpectedPause()
+                }
             }
         }
         nc.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
                 self.inBackground = false
+                self.setVideoTracks(enabled: true)
                 self.setSurfacesAttached(true)
             }
         }
@@ -529,11 +694,21 @@ final class Player: ObservableObject {
     private func interruption(_ type: AVAudioSession.InterruptionType, _ options: AVAudioSession.InterruptionOptions) {
         switch type {
         case .began:
-            resumeAfterInterruption = isPlaying
+            // A call, an alarm, Siri, or another app that started its own sound.
+            resumeAfterInterruption = isPlaying || !userPaused
+            interrupted = true
             isPlaying = false
+            FolderLog.append("Sound interrupted by iOS (call, alarm or another app)")
             saveState(force: true)
         case .ended:
-            if resumeAfterInterruption && options.contains(.shouldResume) { resume() }
+            interrupted = false
+            if resumeAfterInterruption && options.contains(.shouldResume) {
+                FolderLog.append("Interruption over: playing again")
+                resume()
+            } else if resumeAfterInterruption {
+                // The other app did not hand the sound back: stay paused, like the Music app.
+                userPaused = true
+            }
             resumeAfterInterruption = false
         @unknown default:
             break
@@ -542,11 +717,19 @@ final class Player: ObservableObject {
 
     private func configureSession() {
         let s = AVAudioSession.sharedInstance()
-        try? s.setCategory(.playback, mode: .default, options: [])
+        do {
+            try s.setCategory(.playback, mode: .default, options: mixWithOthers ? [.mixWithOthers] : [])
+        } catch {
+            FolderLog.append("Could not set up the sound: \(error.localizedDescription)")
+        }
     }
 
     private func activateSession() {
-        try? AVAudioSession.sharedInstance().setActive(true)
+        do {
+            try AVAudioSession.sharedInstance().setActive(true)
+        } catch {
+            FolderLog.append("Could not start the sound: \(error.localizedDescription)")
+        }
     }
 
     // MARK: Lock screen and Control Center
@@ -603,6 +786,8 @@ final class Player: ObservableObject {
             Task { @MainActor in self?.setRate(r) }
             return .success
         }
+        // Fine speeds (e.g. 0.85x) set in the app also show on the lock screen.
+        c.changePlaybackRateCommand.supportedPlaybackRates = [0.5, 0.75, 0.8, 0.85, 0.9, 0.95, 1.0, 1.05, 1.1, 1.25, 1.5, 1.75, 2.0].map { NSNumber(value: $0) }
         c.skipForwardCommand.isEnabled = false
         c.skipBackwardCommand.isEnabled = false
         updateRemoteState()
@@ -753,8 +938,10 @@ enum FileAccess {
     }
 
     static func prefetch(_ url: URL) {
+        // Fully downloaded ahead of time, so the next song starts without a silent wait
+        // (iOS may suspend an app that is silent in the background).
         DispatchQueue.global(qos: .utility).async {
-            if !isCurrent(url) { try? FileManager.default.startDownloadingUbiquitousItem(at: url) }
+            if !isCurrent(url) { _ = ensureLocalSync(url) }
         }
     }
 }

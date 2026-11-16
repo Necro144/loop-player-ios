@@ -75,8 +75,17 @@ final class Player: ObservableObject {
     var upNext: [Track] { index + 1 < queue.count ? Array(queue[(index + 1)...]) : [] }
 
     private init() {
+        // 1.1.2: "Play along with other apps" makes iOS hide the lock screen and Control Center
+        // controls. Turn it off once for everyone; it can be turned on again in Settings.
+        if !UserDefaults.standard.bool(forKey: "mixMigrated112") {
+            UserDefaults.standard.set(true, forKey: "mixMigrated112")
+            UserDefaults.standard.set(false, forKey: "mixWithOthers")
+            mixWithOthers = false
+        }
         avPlayer.actionAtItemEnd = .none
         avPlayer.allowsExternalPlayback = true
+        // Video files keep playing (as sound) when the app is in the background.
+        avPlayer.audiovisualBackgroundPlaybackPolicy = .continuesIfPossible
         configureSession()
         observePlayer()
         observeSystem()
@@ -446,6 +455,7 @@ final class Player: ObservableObject {
             }
             let item = AVPlayerItem(url: url)
             item.audioTimePitchAlgorithm = self.pitchAlgorithm
+            if track.isVideo && !track.hasArtwork { self.captureFrame(item, id: track.id, token: token) }
             self.watch(item, token: token)
             self.avPlayer.replaceCurrentItem(with: item)
             if seconds > 0.5 {
@@ -476,6 +486,32 @@ final class Player: ObservableObject {
                 guard let self, token == self.loadToken else { return }
                 self.itemEnded()
             }
+        }
+    }
+
+    /// Picture for a video taken from the frames the player itself shows: works even when reading
+    /// the file a second time (the usual way) fails on the phone.
+    private func captureFrame(_ item: AVPlayerItem, id: String, token: Int) {
+        let out = AVPlayerItemVideoOutput(pixelBufferAttributes: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
+        item.add(out)
+        Task {
+            var best: (Data, Double)?
+            for attempt in 0..<12 {
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                guard token == self.loadToken else { return }
+                if Library.shared.track(id)?.hasArtwork == true { return }
+                let t = item.currentTime()
+                guard t.seconds > 1.5, let buf = out.copyPixelBuffer(forItemTime: t, itemTimeForDisplay: nil) else { continue }
+                guard let shot = Thumbnail.fromPixelBuffer(buf) else { continue }
+                if best == nil || shot.1 > best!.1 { best = shot }
+                // Skip black or very dark frames (fade-ins) for a few tries.
+                if shot.1 > 0.12 || attempt >= 8 { break }
+            }
+            guard token == self.loadToken, let best else {
+                FolderLog.append("No frame could be taken from the playing video \(id)")
+                return
+            }
+            Library.shared.setThumbnail(id, jpg: best.0, how: "from the playing video")
         }
     }
 
@@ -678,6 +714,8 @@ final class Player: ObservableObject {
                 guard let self else { return }
                 self.inBackground = true
                 self.setSurfacesAttached(false)
+                // Keeps the sound session ours, so the lock screen and Control Center show the song.
+                if self.isPlaying { self.activateSession() }
                 self.saveState(force: true)
                 self.updateNowPlaying()
             }
@@ -716,6 +754,21 @@ final class Player: ObservableObject {
         @unknown default:
             break
         }
+    }
+
+    /// What iOS needs to show the song on the lock screen, for Settings > Lock screen check.
+    func lockScreenReport() -> [String] {
+        let s = AVAudioSession.sharedInstance()
+        let info = MPNowPlayingInfoCenter.default().nowPlayingInfo
+        var lines: [String] = []
+        lines.append("Sound mode: \(s.category == .playback ? "playback (good)" : s.category.rawValue)")
+        lines.append(s.categoryOptions.contains(.mixWithOthers) ? "Play along with other apps: ON (iOS hides the lock screen controls)" : "Play along with other apps: off (good)")
+        lines.append("Another app is playing sound: \(s.isOtherAudioPlaying ? "yes" : "no")")
+        lines.append("Playing now: \(isPlaying ? "yes" : "no")")
+        lines.append("Song sent to the lock screen: \((info?[MPMediaItemPropertyTitle] as? String) ?? "none")")
+        lines.append("Picture sent: \(info?[MPMediaItemPropertyArtwork] != nil ? "yes" : "no")")
+        lines.append("Background audio allowed: \(((Bundle.main.object(forInfoDictionaryKey: "UIBackgroundModes") as? [String]) ?? []).contains("audio") ? "yes" : "NO")")
+        return lines
     }
 
     private func configureSession() {

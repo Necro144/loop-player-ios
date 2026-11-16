@@ -1,10 +1,10 @@
 name: Simulator test on iOS 16.4
 
 on:
-  # Run by hand (Actions tab > Run workflow) or by pushing a test-* branch,
+  # Run by hand (Actions tab > Run workflow) or by pushing a simtest-* branch,
   # so private-repo Mac minutes are not spent on every push.
   push:
-    branches: ['test-*']
+    branches: ['simtest-*']
   workflow_dispatch:
 
 jobs:

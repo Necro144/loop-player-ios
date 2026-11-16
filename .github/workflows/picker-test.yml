@@ -1,10 +1,10 @@
 name: Folder picker test on iOS 16.4
 
 on:
-  # Run by hand (Actions tab > Run workflow) or by pushing a picker-* / test-* branch,
+  # Run by hand (Actions tab > Run workflow) or by pushing a picker-* branch,
   # so private-repo Mac minutes are not spent on every push.
   push:
-    branches: ['picker-*', 'test-*']
+    branches: ['picker-*']
   workflow_dispatch:
 
 jobs:

@@ -772,6 +772,11 @@ struct SettingsView: View {
     @State private var confirmClear = false
     @State private var removing: FolderSource?
     @State private var showSpeed = false
+    @State private var confirmCache = false
+    @State private var cacheResult: String?
+    @State private var clearing = false
+    @State private var ytKey = UserDefaults.standard.string(forKey: "ytApiKey") ?? ""
+    @State private var lockReport: [String]?
 
     var body: some View {
         List {
@@ -829,6 +834,14 @@ struct SettingsView: View {
                 Button { confirmClear = true } label: {
                     Label("Rebuild Library and Artwork", systemImage: "photo.on.rectangle.angled")
                 }
+                Button { confirmCache = true } label: {
+                    HStack {
+                        Label("Clear Cache", systemImage: "trash")
+                        Spacer()
+                        if clearing { ProgressView() } else if let cacheResult { Text(cacheResult).font(.caption).foregroundColor(Theme.dim) }
+                    }
+                }
+                .disabled(clearing)
             }
 
             Section {
@@ -856,14 +869,30 @@ struct SettingsView: View {
                     }
                 }
                 Toggle("Keep pitch when changing speed", isOn: Binding(get: { player.keepPitch }, set: { player.setKeepPitch($0) }))
-                Toggle("Play along with other apps", isOn: Binding(get: { player.mixWithOthers }, set: { player.setMixWithOthers($0) }))
+                Toggle("Play along with other apps (hides lock screen controls)", isOn: Binding(get: { player.mixWithOthers }, set: { player.setMixWithOthers($0) }))
+                Button { lockReport = player.lockScreenReport() } label: {
+                    Label("Lock Screen Check", systemImage: "lock.iphone")
+                }
                 Button(role: .destructive) { store.clearRecent() } label: {
                     Label("Clear Recently Played", systemImage: "clock.arrow.circlepath")
                 }
             } header: {
                 Text("Playback")
             } footer: {
-                Text("Keep pitch off: slowing down sounds deeper, like a tape. \"Play along with other apps\" keeps the music going when another app plays sound, but iOS then hides the lock screen controls.")
+                Text("Keep pitch off: slowing down sounds deeper, like a tape. \"Play along with other apps\" keeps the music going when another app plays sound, but iOS then hides the song on the lock screen and in Control Center, so leave it off to see them.")
+            }
+
+            Section {
+                SecureField("YouTube API key (optional)", text: $ytKey)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .onChange(of: ytKey) { v in
+                        UserDefaults.standard.set(v.trimmingCharacters(in: .whitespacesAndNewlines), forKey: "ytApiKey")
+                    }
+            } header: {
+                Text("YouTube")
+            } footer: {
+                Text("Without a key, YouTube gives other apps at most 200 videos of a playlist. With your own free key, Loop Player loads all of them. To get one: console.cloud.google.com > create a project > APIs & Services > Library > enable \"YouTube Data API v3\" > Credentials > Create credentials > API key. Paste it here, then open the playlist and choose Reload the List.\n\nYouTube videos play only while Loop Player is on screen: YouTube does not allow other apps to play its videos in the background or on the lock screen.")
             }
 
             Section("About") {
@@ -885,6 +914,21 @@ struct SettingsView: View {
         .background(Theme.bg)
         .navigationTitle("Settings")
         .sheet(isPresented: $showSpeed) { SpeedSheet() }
+        .confirmationDialog("Clear the cache? Pictures and YouTube's stored data are deleted and made again. Your songs, playlists and settings stay.", isPresented: $confirmCache, titleVisibility: .visible) {
+            Button("Clear Cache", role: .destructive) {
+                clearing = true
+                Task {
+                    let freed = await library.clearCache()
+                    clearing = false
+                    cacheResult = "Cleared \(freed)"
+                }
+            }
+        }
+        .alert("Lock Screen Check", isPresented: Binding(get: { lockReport != nil }, set: { if !$0 { lockReport = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text((lockReport ?? []).joined(separator: "\n"))
+        }
         .confirmationDialog("Read every file again and redraw the artwork? This can take a while on big libraries.", isPresented: $confirmClear, titleVisibility: .visible) {
             Button("Rebuild") { library.clearArtworkCache() }
         }

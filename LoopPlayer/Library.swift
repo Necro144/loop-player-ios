@@ -3,6 +3,8 @@ import AVFoundation
 import UIKit
 import ImageIO
 import QuickLookThumbnailing
+import WebKit
+import CoreImage
 
 /// The chosen folders and every track found in them. Scanning runs off the main thread and
 /// the result is cached, so the next launch shows the library at once and only changed files are read again.
@@ -312,13 +314,60 @@ final class Library: ObservableObject {
             await MainActor.run {
                 guard let self else { return }
                 self.thumbMaking.remove(id)
-                guard let jpg, var t = self.byID[id], !t.hasArtwork else { return }
-                try? jpg.write(to: AppPaths.artworkFile(for: id), options: .atomic)
-                ArtworkCache.shared.forget(id)
-                t.hasArtwork = true
-                self.replace(t)
+                if let jpg { self.setThumbnail(id, jpg: jpg, how: "from the opened file") }
             }
         }
+    }
+
+    func track(_ id: String) -> Track? { byID[id] }
+
+    /// Saves a picture for a video and shows it everywhere.
+    func setThumbnail(_ id: String, jpg: Data, how: String) {
+        guard var t = byID[id], !t.hasArtwork else { return }
+        do {
+            try FileManager.default.createDirectory(at: AppPaths.artwork, withIntermediateDirectories: true)
+            try jpg.write(to: AppPaths.artworkFile(for: id), options: .atomic)
+        } catch {
+            FolderLog.append("Couldn't save the picture for \(t.relativePath): \(error.localizedDescription)")
+            return
+        }
+        ArtworkCache.shared.forget(id)
+        t.hasArtwork = true
+        replace(t)
+        FolderLog.append("Picture made for \(t.relativePath) (\(how))")
+    }
+
+    /// Settings > Clear Cache: pictures, YouTube's stored player data and downloaded web files.
+    /// Songs, playlists, folders and settings stay. Video pictures are made again.
+    func clearCache() async -> String {
+        let fm = FileManager.default
+        var bytes: Int64 = 0
+        if let files = try? fm.contentsOfDirectory(at: AppPaths.artwork, includingPropertiesForKeys: [.fileSizeKey]) {
+            for f in files {
+                bytes += Int64((try? f.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+                try? fm.removeItem(at: f)
+            }
+        }
+        if let caches = fm.urls(for: .cachesDirectory, in: .userDomainMask).first,
+           let files = try? fm.contentsOfDirectory(at: caches, includingPropertiesForKeys: [.fileSizeKey]) {
+            for f in files where f.lastPathComponent != AppPaths.artwork.lastPathComponent {
+                bytes += Int64((try? f.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+                try? fm.removeItem(at: f)
+            }
+        }
+        URLCache.shared.removeAllCachedResponses()
+        let store = WKWebsiteDataStore.default()
+        await store.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast)
+        ArtworkCache.shared.clear()
+        thumbTried = []
+        thumbMaking = []
+        var list = tracks
+        for i in list.indices where list[i].hasArtwork { list[i].hasArtwork = false }
+        setTracks(list, save: true)
+        FolderLog.append("Cache cleared (\(ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)))")
+        // Song covers come back from the files' tags with a scan; video pictures from the fill pass.
+        rescan()
+        return ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
     }
 
     /// Length learned by the player, for files the scan could not measure.
@@ -775,6 +824,18 @@ enum Thumbnail {
             Scanner.noteFailure("Video frame failed for \(name): \(ns.localizedDescription) [\(ns.domain) \(ns.code)]")
         }
         return best.map { UIImage(cgImage: $0.0).jpegData(compressionQuality: 0.8) } ?? nil
+    }
+
+    private static let ci = CIContext(options: [.useSoftwareRenderer: false])
+
+    /// JPEG (max 640 px) and brightness of one frame the player decoded.
+    static func fromPixelBuffer(_ buf: CVPixelBuffer) -> (Data, Double)? {
+        var img = CIImage(cvPixelBuffer: buf)
+        let w = img.extent.width
+        if w > 640 { img = img.transformed(by: CGAffineTransform(scaleX: 640 / w, y: 640 / w)) }
+        guard let cg = ci.createCGImage(img, from: img.extent),
+              let jpg = UIImage(cgImage: cg).jpegData(compressionQuality: 0.8) else { return nil }
+        return (jpg, brightness(cg))
     }
 
     /// Average brightness 0...1, measured on an 8x8 copy.

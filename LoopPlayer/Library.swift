@@ -244,10 +244,12 @@ final class Library: ObservableObject {
 
     private var thumbTried: Set<String> = []
     private var thumbTask: Task<Void, Never>?
+    private var thumbMaking: Set<String> = []
 
-    /// Videos still without a picture after the scan (not downloaded from iCloud yet, or too slow to
-    /// read in time) get one now, one at a time: a frame from the video when the file is on the phone,
-    /// otherwise the preview iCloud keeps for it. Each video is tried once per app launch.
+    /// Videos still without a picture after the scan get one now, one at a time and without the
+    /// scan's 20-second limit: a frame from the video when the file is on the phone, otherwise the
+    /// preview iCloud keeps for it. Songs whose length could not be read are read once more.
+    /// Each file is tried once per app launch; what fails is written to the Folder Log.
     func fillMissingThumbnails() {
         thumbTask?.cancel()
         let todo = tracks.filter { t in
@@ -256,35 +258,74 @@ final class Library: ObservableObject {
         guard !todo.isEmpty else { return }
         for t in todo { thumbTried.insert(t.id) }
         let roots = folderURLs
-        FolderLog.append("Making pictures for \(todo.count) videos/songs without one")
+        FolderLog.append("Making pictures / lengths for \(todo.count) files")
         thumbTask = Task.detached(priority: .utility) { [weak self] in
-            var made = 0
+            var made = 0, failed = 0
             for t in todo {
                 if Task.isCancelled { return }
                 guard let root = roots[t.folderID] else { continue }
                 let url = root.appendingPathComponent(t.relativePath)
-                if !t.isPlaceholder {
+                var fresh = t
+                if !t.isPlaceholder && t.duration <= 0 {
                     let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
                     let entry = Scanner.Entry(folderID: t.folderID, url: url, relativePath: t.relativePath,
                                               size: Int64(values?.fileSize ?? Int(t.fileSize)),
                                               modified: values?.contentModificationDate ?? t.modified,
                                               placeholder: false)
-                    var fresh = await Scanner.readLimited(entry)
-                    guard fresh.duration > 0 || fresh.hasArtwork else { continue }
-                    fresh.added = t.added
-                    if fresh.hasArtwork { made += 1 }
-                    await self?.replace(fresh)
-                } else if t.isVideo, let jpg = await Thumbnail.systemThumbnail(url) {
-                    try? jpg.write(to: AppPaths.artworkFile(for: t.id), options: .atomic)
-                    var fresh = t
-                    fresh.hasArtwork = true
-                    made += 1
-                    await MainActor.run { ArtworkCache.shared.forget(t.id) }
-                    await self?.replace(fresh)
+                    let read = await Limit.run(45) { await Scanner.read(entry, videoFrame: false) }
+                    if let read, read.duration > 0 {
+                        fresh = read
+                        fresh.added = t.added
+                    } else {
+                        Scanner.noteFailure("Still could not read \(t.relativePath) (it may still play)")
+                    }
                 }
+                if fresh.isVideo && !fresh.hasArtwork {
+                    var jpg: Data?
+                    if !t.isPlaceholder {
+                        let d = fresh.duration
+                        jpg = await Limit.run(60) { await Thumbnail.videoFrame(AVURLAsset(url: url), duration: d, name: t.relativePath) }
+                    }
+                    if jpg == nil { jpg = await Thumbnail.systemThumbnail(url) }
+                    if let jpg {
+                        try? jpg.write(to: AppPaths.artworkFile(for: t.id), options: .atomic)
+                        fresh.hasArtwork = true
+                        made += 1
+                        await MainActor.run { ArtworkCache.shared.forget(t.id) }
+                    } else {
+                        failed += 1
+                        Scanner.noteFailure("No picture could be made for \(t.relativePath)")
+                    }
+                }
+                if fresh != t { await self?.replace(fresh) }
             }
-            FolderLog.append("Pictures made: \(made) of \(todo.count)")
+            FolderLog.append("Pictures made: \(made), failed: \(failed)")
         }
+    }
+
+    /// Picture for a video from the asset the player opened (called when it starts playing).
+    func makeThumbnail(_ id: String, from asset: AVAsset, duration: Double) {
+        guard !thumbMaking.contains(id) else { return }
+        thumbMaking.insert(id)
+        Task.detached(priority: .utility) { [weak self] in
+            let jpg = await Limit.run(60) { await Thumbnail.videoFrame(asset, duration: duration, name: id) }
+            await MainActor.run {
+                guard let self else { return }
+                self.thumbMaking.remove(id)
+                guard let jpg, var t = self.byID[id], !t.hasArtwork else { return }
+                try? jpg.write(to: AppPaths.artworkFile(for: id), options: .atomic)
+                ArtworkCache.shared.forget(id)
+                t.hasArtwork = true
+                self.replace(t)
+            }
+        }
+    }
+
+    /// Length learned by the player, for files the scan could not measure.
+    func setDuration(_ id: String, _ d: Double) {
+        guard var t = byID[id], t.duration <= 0, d > 0 else { return }
+        t.duration = d
+        replace(t)
     }
 
     /// Reads the tags again for one file, e.g. after an iCloud file finished downloading.
@@ -560,7 +601,8 @@ enum Scanner {
     static func readLimited(_ e: Entry) async -> Track {
         await withCheckedContinuation { (cont: CheckedContinuation<Track, Never>) in
             let once = Once(cont)
-            Task.detached(priority: .userInitiated) { once.resume(await read(e)) }
+            // Video frames are left to the picture pass after the scan, so big videos can't time out here.
+            Task.detached(priority: .userInitiated) { once.resume(await read(e, videoFrame: false)) }
             Task.detached {
                 try? await Task.sleep(nanoseconds: 20_000_000_000)
                 if once.resume(basic(e)) {
@@ -613,7 +655,7 @@ enum Scanner {
                      fileSize: e.size, modified: e.modified, added: Date(), isPlaceholder: e.placeholder)
     }
 
-    static func read(_ e: Entry) async -> Track {
+    static func read(_ e: Entry, videoFrame: Bool = true) async -> Track {
         let ext = (e.relativePath as NSString).pathExtension.lowercased()
         let guess = nameGuess((e.relativePath as NSString).lastPathComponent)
         var t = Track(id: e.id, folderID: e.folderID, relativePath: e.relativePath,
@@ -664,9 +706,11 @@ enum Scanner {
         if let artData, let jpg = Thumbnail.jpeg(from: artData, maxPixel: 700) {
             try? jpg.write(to: artURL, options: .atomic)
             t.hasArtwork = true
-        } else if t.isVideo, let jpg = await Thumbnail.videoFrame(asset, duration: t.duration) {
+        } else if t.isVideo, videoFrame, let jpg = await Thumbnail.videoFrame(asset, duration: t.duration, name: e.relativePath) {
             try? jpg.write(to: artURL, options: .atomic)
             t.hasArtwork = true
+        } else if t.isVideo && !videoFrame && FileManager.default.fileExists(atPath: artURL.path) {
+            t.hasArtwork = true   // picture made earlier by the picture pass
         } else {
             try? FileManager.default.removeItem(at: artURL)
         }
@@ -699,7 +743,7 @@ enum Thumbnail {
 
     /// A frame from the video for its thumbnail. Song videos often open on black, so a few
     /// moments are tried and the first one that is not (nearly) black wins.
-    static func videoFrame(_ asset: AVAsset, duration: Double) async -> Data? {
+    static func videoFrame(_ asset: AVAsset, duration: Double, name: String = "") async -> Data? {
         let gen = AVAssetImageGenerator(asset: asset)
         gen.appliesPreferredTrackTransform = true
         gen.maximumSize = CGSize(width: 700, height: 700)
@@ -713,11 +757,22 @@ enum Thumbnail {
         var times: [Double] = d > 4 ? [min(d * 0.25, 30), d * 0.5, min(d * 0.1, 8), 2, 0] : [0]
         times = times.map { max(0, min($0, max(0, d - 0.5))) }
         var best: (CGImage, Double)?
+        var lastError: Error?
         for t in times {
-            guard let cg = try? await gen.image(at: CMTime(seconds: t, preferredTimescale: 600)).image else { continue }
+            let cg: CGImage
+            do {
+                cg = try await gen.image(at: CMTime(seconds: t, preferredTimescale: 600)).image
+            } catch {
+                lastError = error
+                continue
+            }
             let light = brightness(cg)
             if light > 0.09 { return UIImage(cgImage: cg).jpegData(compressionQuality: 0.8) }
             if best == nil || light > best!.1 { best = (cg, light) }
+        }
+        if best == nil, let lastError {
+            let ns = lastError as NSError
+            Scanner.noteFailure("Video frame failed for \(name): \(ns.localizedDescription) [\(ns.domain) \(ns.code)]")
         }
         return best.map { UIImage(cgImage: $0.0).jpegData(compressionQuality: 0.8) } ?? nil
     }
@@ -798,5 +853,32 @@ final class ArtworkCache {
     func clear() {
         cache.removeAllObjects()
         missing.removeAll()
+    }
+}
+
+/// Runs `op`, but returns nil after `seconds` if it has not finished (the work itself may go on).
+enum Limit {
+    static func run<T>(_ seconds: Double, _ op: @escaping () async -> T?) async -> T? {
+        await withCheckedContinuation { (cont: CheckedContinuation<T?, Never>) in
+            let box = Box(cont)
+            Task.detached { box.resume(await op()) }
+            Task.detached {
+                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                box.resume(nil)
+            }
+        }
+    }
+
+    private final class Box<T>: @unchecked Sendable {
+        private let lock = NSLock()
+        private var cont: CheckedContinuation<T?, Never>?
+        init(_ c: CheckedContinuation<T?, Never>) { cont = c }
+        func resume(_ v: T?) {
+            lock.lock()
+            let c = cont
+            cont = nil
+            lock.unlock()
+            c?.resume(returning: v)
+        }
     }
 }

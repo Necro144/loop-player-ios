@@ -539,7 +539,9 @@ struct SearchView: View {
 struct PlaylistsView: View {
     @EnvironmentObject var store: UserStore
     @EnvironmentObject var yt: YouTubeStore
+    @EnvironmentObject var sp: SpotifyStore
     @State private var importingYT = false
+    @State private var importingSP = false
     @State private var naming = false
     @State private var newName = ""
 
@@ -575,8 +577,12 @@ struct PlaylistsView: View {
                 for o in offsets { store.deletePlaylist(store.playlists[o].id) }
             }
             Section {
-                YouTubeImportRow(importing: $importingYT)
-                    .listRowBackground(Theme.bg)
+                Button { importingYT = true } label: {
+                    Label("Add YouTube Playlist or Video", systemImage: "play.rectangle.on.rectangle.fill")
+                        .font(.headline)
+                        .foregroundColor(Theme.accent)
+                }
+                .listRowBackground(Theme.bg)
                 ForEach(yt.playlists) { p in
                     NavigationLink { YouTubePlaylistView(playlistID: p.id) } label: {
                         YouTubePlaylistRow(playlist: p)
@@ -589,10 +595,30 @@ struct PlaylistsView: View {
             } header: {
                 Text("YouTube")
             }
+            Section {
+                Button { importingSP = true } label: {
+                    Label("Import Spotify Playlist", systemImage: "music.note.list")
+                        .font(.headline)
+                        .foregroundColor(Theme.accent)
+                }
+                .listRowBackground(Theme.bg)
+                ForEach(sp.lists) { l in
+                    NavigationLink { SpotifyListView(listID: l.id) } label: {
+                        SpotifyListRow(list: l)
+                    }
+                    .listRowBackground(Theme.bg)
+                }
+                .onDelete { offsets in
+                    for o in offsets { sp.delete(sp.lists[o].id) }
+                }
+            } header: {
+                Text("Spotify")
+            }
         }
         .darkList()
         .navigationTitle("Playlists")
         .sheet(isPresented: $importingYT) { YouTubeImportSheet() }
+        .sheet(isPresented: $importingSP) { SpotifyImportSheet() }
         .alert("New Playlist", isPresented: $naming) {
             TextField("Name", text: $newName)
             Button("Cancel", role: .cancel) { newName = "" }

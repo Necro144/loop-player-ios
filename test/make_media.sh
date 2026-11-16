@@ -16,5 +16,7 @@ ffmpeg -loglevel error -y -f lavfi -i "sine=frequency=330:duration=12" "Sub Fold
 ffmpeg -loglevel error -y -f lavfi -i "sine=frequency=550:duration=15" "Sub Folder/Deeper/01 - Untagged Flac.flac"
 ffmpeg -loglevel error -y -f lavfi -i "testsrc=size=640x360:rate=30:duration=20" -f lavfi -i "sine=frequency=500:duration=20" \
   -c:v libx264 -pix_fmt yuv420p -c:a aac -shortest -metadata title="Clip Video" -metadata artist="Necro" "clip.mp4"
+# A longer song video that starts on black (like many song videos): the picture must skip the black.
+ffmpeg -loglevel error -y -f lavfi -i "testsrc2=size=640x360:rate=10:duration=120" -f lavfi -i "sine=frequency=420:duration=120"   -vf "fade=t=in:st=4:d=0.5" -c:v libx264 -pix_fmt yuv420p -c:a aac -shortest   -metadata title="Long Song Video" -metadata artist="Necro" "Long Song Video.mp4"
 rm cover.png
 find . -type f -exec ls -l {} \;

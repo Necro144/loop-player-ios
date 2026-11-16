@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import MediaPlayer
 
 enum Theme {
     static let bg = Color.black
@@ -19,6 +20,11 @@ final class AppUI: ObservableObject {
     @Published var addToPlaylist: TrackIDs?
     @Published var info: Track?
     @Published var showPhoneBrowser = false
+    @Published var openYouTube: OpenID?
+}
+
+struct OpenID: Identifiable {
+    let id: UUID
 }
 
 struct TrackIDs: Identifiable {
@@ -65,6 +71,7 @@ struct LoopPlayerApp: App {
                 .environmentObject(store)
                 .environmentObject(ui)
                 .environmentObject(YouTubeStore.shared)
+                .environmentObject(SpotifyStore.shared)
                 .preferredColorScheme(.dark)
                 .tint(Theme.accent)
         }
@@ -93,6 +100,9 @@ struct RootView: View {
         }
         .sheet(item: $ui.info) { t in
             TrackInfoView(track: t)
+        }
+        .sheet(item: $ui.openYouTube) { o in
+            NavigationStack { YouTubePlaylistView(playlistID: o.id) }
         }
         .sheet(isPresented: $ui.showPhoneBrowser) {
             PhoneBrowserView()
@@ -216,7 +226,9 @@ enum TestHooks {
                     try? await Task.sleep(nanoseconds: 500_000_000)
                 }
                 let all = Grouping.sort(Library.shared.tracks, by: .title)
-                if let v = env["TEST_PLAY_VIDEO"], v == "1", let i = all.firstIndex(where: { $0.isVideo }) {
+                if let title = env["TEST_PLAY_TITLE"], let i = all.firstIndex(where: { $0.title == title }) {
+                    Player.shared.play(all, startAt: i)
+                } else if let v = env["TEST_PLAY_VIDEO"], v == "1", let i = all.firstIndex(where: { $0.isVideo }) {
                     Player.shared.play(all, startAt: i)
                 } else if env["TEST_PLAY_VIDEO"] == "0", let i = all.firstIndex(where: { !$0.isVideo && $0.hasArtwork }) {
                     Player.shared.play(all, startAt: i)
@@ -228,8 +240,27 @@ enum TestHooks {
                     try? await Task.sleep(nanoseconds: 800_000_000)
                     Player.shared.showFullPlayer = true
                 }
+                if let out = env["TEST_BG_OUT"] {
+                    // The test sends the app to the background meanwhile (opens Settings).
+                    let wait = Double(env["TEST_BG_WAIT"] ?? "40") ?? 40
+                    try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+                    let p = Player.shared
+                    let info = MPNowPlayingInfoCenter.default().nowPlayingInfo
+                    let lines = [
+                        "background=\(p.isInBackground)",
+                        "playing=\(p.isPlaying)",
+                        "time=\(Int(p.clock.time))",
+                        "bgPauses=\(p.bgPauses)",
+                        "current=\(p.current?.title ?? "-")",
+                        "nowPlayingTitle=\(info?[MPMediaItemPropertyTitle] as? String ?? "-")",
+                        "nowPlayingRate=\(info?[MPNowPlayingInfoPropertyPlaybackRate] as? Double ?? -1)",
+                        "nowPlayingArtwork=\(info?[MPMediaItemPropertyArtwork] != nil)",
+                    ]
+                    try? lines.joined(separator: "\n").write(toFile: out, atomically: true, encoding: .utf8)
+                }
                 if let out = env["TEST_OUT"] {
-                    try? await Task.sleep(nanoseconds: 7_000_000_000)
+                    let wait = Double(env["TEST_OUT_WAIT"] ?? "7") ?? 7
+                    try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
                     let p = Player.shared
                     let lib = Library.shared
                     var lines = [
@@ -246,8 +277,43 @@ enum TestHooks {
                     for t in Grouping.sort(lib.tracks, by: .title) {
                         lines.append("track: \(t.title) | \(t.artist) | \(t.album) | \(Int(t.duration))s | video=\(t.isVideo) | art=\(t.hasArtwork) | \(t.relativePath)")
                     }
+                    lines.append(contentsOf: FolderLog.read().suffix(40).map { "log: \($0)" })
                     try? lines.joined(separator: "\n").write(toFile: out, atomically: true, encoding: .utf8)
                 }
+            }
+        }
+        if let link = env["TEST_YT"], let out = env["TEST_YT_OUT"] {
+            Task { @MainActor in
+                let err = await YouTubeStore.shared.add(link)
+                let list = YouTubeStore.parse(link)
+                guard let p = YouTubeStore.shared.playlists.first(where: {
+                    (list.list != nil && $0.listID == list.list) || (list.list == nil && $0.videoID == list.video)
+                }) else {
+                    try? "add failed: \(err ?? "-")".write(toFile: out, atomically: true, encoding: .utf8)
+                    return
+                }
+                AppUI.shared.openYouTube = OpenID(id: p.id)
+                try? await Task.sleep(nanoseconds: 40_000_000_000)
+                let now = YouTubeStore.shared.playlist(p.id)
+                var lines = ["title=\(now?.title ?? "-")", "single=\(now?.isSingle ?? false)",
+                             "videos=\(now?.videos.count ?? 0)",
+                             "titled=\(now?.videos.filter { !$0.title.isEmpty }.count ?? 0)"]
+                lines += YTController.testLog.map { "event: \($0)" }
+                try? lines.joined(separator: "\n").write(toFile: out, atomically: true, encoding: .utf8)
+            }
+        }
+        if let link = env["TEST_SPOTIFY"], let out = env["TEST_SP_OUT"] {
+            Task { @MainActor in
+                let err = await SpotifyStore.shared.add(link)
+                var lines = ["error=\(err ?? "-")"]
+                if let l = SpotifyStore.shared.lists.first {
+                    lines.append("title=\(l.title)")
+                    lines.append("tracks=\(l.tracks.count)")
+                    lines += l.tracks.prefix(3).map { "track: \($0.title) | \($0.artist) | \(Int($0.duration))" }
+                    let m = SongMatcher(Library.shared.tracks)
+                    lines.append("matched=\(l.tracks.filter { m.find($0) != nil }.count)")
+                }
+                try? lines.joined(separator: "\n").write(toFile: out, atomically: true, encoding: .utf8)
             }
         }
     }

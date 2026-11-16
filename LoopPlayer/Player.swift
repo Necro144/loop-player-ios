@@ -67,6 +67,9 @@ final class Player: ObservableObject {
     private var lastAutoResume = Date.distantPast
     private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
     private var loopObserver: Any?
+    /// For the simulator test: how often the player stopped while the app was in the background.
+    private(set) var bgPauses = 0
+    var isInBackground: Bool { inBackground }
 
     var current: Track? { queue.indices.contains(index) ? queue[index] : nil }
     var upNext: [Track] { index + 1 < queue.count ? Array(queue[(index + 1)...]) : [] }
@@ -78,6 +81,7 @@ final class Player: ObservableObject {
         observePlayer()
         observeSystem()
         setupRemoteCommands()
+        UIApplication.shared.beginReceivingRemoteControlEvents()
         restore()
     }
 
@@ -184,6 +188,8 @@ final class Player: ObservableObject {
         avPlayer.defaultRate = rate
         avPlayer.playImmediately(atRate: rate)
         endBackgroundTask()
+        // Publish the lock screen / Control Center info again now that the sound is live.
+        updateNowPlaying()
         if let t = current, countedPlay != t.id {
             countedPlay = t.id
             UserStore.shared.markPlayed(t.id)
@@ -479,9 +485,16 @@ final class Player: ObservableObject {
         case .readyToPlay:
             failures = 0
             let d = CMTimeGetSeconds(duration)
-            if d.isFinite && d > 0 { clock.duration = d }
-            if inBackground { setVideoTracks(enabled: false) }
+            if d.isFinite && d > 0 {
+                clock.duration = d
+                // The scan could not read the length: the player could, so the list gets it too.
+                if t.duration <= 0 { Library.shared.setDuration(t.id, d) }
+            }
             updateNowPlaying()
+            if t.isVideo && !t.hasArtwork, let asset = avPlayer.currentItem?.asset {
+                // Picture from the file the player just opened (works whatever the scan ran into).
+                Library.shared.makeThumbnail(t.id, from: asset, duration: clock.duration)
+            }
         case .failed:
             failed(t, "Can't play \(t.fileName)")
         default:
@@ -556,15 +569,6 @@ final class Player: ObservableObject {
         backgroundTask = .invalid
     }
 
-    /// iOS pauses players whose item shows video when the app leaves the screen. Turning the
-    /// picture off in the background makes the item audio-only, so the sound keeps going.
-    private func setVideoTracks(enabled: Bool) {
-        guard let item = avPlayer.currentItem else { return }
-        for t in item.tracks where t.assetTrack?.mediaType == .video {
-            t.isEnabled = enabled
-        }
-    }
-
     /// The player stopped although nobody asked it to (iOS pausing a video in the background):
     /// start it again, at most once every few seconds so it can never fight the system.
     private func unexpectedPause() {
@@ -572,7 +576,7 @@ final class Player: ObservableObject {
               Date().timeIntervalSince(lastAutoResume) > 3 else { return }
         lastAutoResume = Date()
         FolderLog.append("Playback stopped by iOS in the background; started again")
-        setVideoTracks(enabled: !inBackground)
+        setSurfacesAttached(!inBackground)
         resume()
     }
 
@@ -610,9 +614,10 @@ final class Player: ObservableObject {
                     self.isPlaying = playing
                     self.updateNowPlayingTime()
                 }
+                if !playing && self.inBackground { self.bgPauses += 1 }
                 if !playing && self.inBackground && !self.userPaused {
                     // Give the end-of-song handler the first word, then check again.
-                    try? await Task.sleep(nanoseconds: 600_000_000)
+                    try? await Task.sleep(nanoseconds: 300_000_000)
                     guard self.avPlayer.timeControlStatus == .paused, self.inBackground,
                           let item = self.avPlayer.currentItem,
                           CMTimeGetSeconds(item.currentTime()) < self.clock.duration - 1 else { return }
@@ -664,25 +669,23 @@ final class Player: ObservableObject {
                 self.load(self.index, autoplay: wasPlaying, at: self.clock.time)
             }
         }
-        // The picture is taken off before the app leaves the screen: some iOS versions pause a
-        // player that still has a video layer at that moment.
+        // The picture must be taken off the player right inside this notification, before it
+        // returns: iOS pauses a player that still shows video once the app is in the background.
+        // (1.1.0 did this a moment later and also switched the video track off, which made the
+        // song stop and start again when going to the home screen.)
         nc.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in
+            MainActor.assumeIsolated {
                 guard let self else { return }
                 self.inBackground = true
                 self.setSurfacesAttached(false)
-                self.setVideoTracks(enabled: false)
                 self.saveState(force: true)
-                if !self.userPaused && self.avPlayer.timeControlStatus == .paused && !self.isPreparing {
-                    self.unexpectedPause()
-                }
+                self.updateNowPlaying()
             }
         }
         nc.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in
+            MainActor.assumeIsolated {
                 guard let self else { return }
                 self.inBackground = false
-                self.setVideoTracks(enabled: true)
                 self.setSurfacesAttached(true)
             }
         }
@@ -816,7 +819,8 @@ final class Player: ObservableObject {
             MPNowPlayingInfoPropertyElapsedPlaybackTime: clock.time,
             MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? Double(rate) : 0.0,
             MPNowPlayingInfoPropertyDefaultPlaybackRate: Double(rate),
-            MPNowPlayingInfoPropertyMediaType: NSNumber(value: (t.isVideo ? MPNowPlayingInfoMediaType.video : .audio).rawValue),
+            // Always "audio": the app plays these as songs, and Control Center shows audio apps reliably.
+            MPNowPlayingInfoPropertyMediaType: NSNumber(value: MPNowPlayingInfoMediaType.audio.rawValue),
             MPNowPlayingInfoPropertyPlaybackQueueIndex: index,
             MPNowPlayingInfoPropertyPlaybackQueueCount: queue.count,
         ]

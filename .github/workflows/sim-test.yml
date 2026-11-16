@@ -81,17 +81,65 @@ jobs:
           launch SIMCTL_CHILD_TEST_TAB=4; sleep 4; shoot 7-settings
           ls -l shots
 
+      - name: Video pictures, background play, YouTube and Spotify
+        run: |
+          shoot () { xcrun simctl io "$UDID" screenshot "shots/$1.png"; }
+          launch () {
+            xcrun simctl terminate "$UDID" com.necro144.loopplayer || true
+            sleep 1
+            env SIMCTL_CHILD_TEST_ADD_DOCUMENTS=1 "$@" xcrun simctl launch "$UDID" com.necro144.loopplayer
+          }
+          waitfor () { for i in $(seq 1 45); do [ -f "$1" ] && break; sleep 2; done; echo "===== $1"; cat "$1" || echo "no report"; }
+          # 5. pictures for the videos (made after the scan), shown in Search
+          launch SIMCTL_CHILD_TEST_TAB=2 SIMCTL_CHILD_TEST_PLAY=1 SIMCTL_CHILD_TEST_PLAY_TITLE="Second Song"                  SIMCTL_CHILD_TEST_OUT_WAIT=30 SIMCTL_CHILD_TEST_OUT="$GITHUB_WORKSPACE/out/thumbs.txt"
+          waitfor out/thumbs.txt
+          xcrun simctl terminate "$UDID" com.necro144.loopplayer || true; sleep 1
+          env SIMCTL_CHILD_TEST_TAB=0 xcrun simctl launch "$UDID" com.necro144.loopplayer; sleep 6; shoot 8-home-with-video-pictures
+          # 6. a video song keeps playing after going to another app; lock screen info is set
+          launch SIMCTL_CHILD_TEST_PLAY=1 SIMCTL_CHILD_TEST_PLAY_TITLE="Long Song Video" SIMCTL_CHILD_TEST_FULL=1                  SIMCTL_CHILD_TEST_BG_WAIT=45 SIMCTL_CHILD_TEST_BG_OUT="$GITHUB_WORKSPACE/out/bg.txt"
+          sleep 14; shoot 9-video-playing
+          xcrun simctl launch "$UDID" com.apple.Preferences
+          sleep 6; shoot 10-in-another-app
+          waitfor out/bg.txt
+          # 7. YouTube playlist, then one video on a loop
+          launch SIMCTL_CHILD_TEST_TAB=3 SIMCTL_CHILD_TEST_YT="https://www.youtube.com/playlist?list=UUBR8-60-B28hp2BmDPdntcQ"                  SIMCTL_CHILD_TEST_YT_PLAY=1 SIMCTL_CHILD_TEST_YT_OUT="$GITHUB_WORKSPACE/out/yt.txt"
+          sleep 30; shoot 11-youtube-playlist
+          waitfor out/yt.txt
+          launch SIMCTL_CHILD_TEST_TAB=3 SIMCTL_CHILD_TEST_YT="https://youtu.be/bkSNwyl7iHE"                  SIMCTL_CHILD_TEST_YT_PLAY=1 SIMCTL_CHILD_TEST_YT_OUT="$GITHUB_WORKSPACE/out/yt1.txt"
+          sleep 30; shoot 12-youtube-video
+          waitfor out/yt1.txt
+          # 8. Spotify playlist import
+          launch SIMCTL_CHILD_TEST_TAB=3 SIMCTL_CHILD_TEST_SPOTIFY="https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M"                  SIMCTL_CHILD_TEST_SP_OUT="$GITHUB_WORKSPACE/out/sp.txt"
+          waitfor out/sp.txt
+          sleep 2; shoot 13-playlists-tab
+
       - name: Check the results
         run: |
+          fail=0
+          check () { if grep -qE "$1" "$2"; then echo "ok   $3"; else echo "FAIL $3"; fail=1; fi; }
+          check "^playing=true$" out/bg.txt "video keeps playing in the background"
+          check "^background=true$" out/bg.txt "app really was in the background"
+          check "^bgPauses=0$" out/bg.txt "no stop-and-start when leaving the app"
+          check "^nowPlayingTitle=Long Song Video$" out/bg.txt "lock screen info set"
+          check "^nowPlayingArtwork=true$" out/bg.txt "lock screen artwork set"
+          check "track: Clip Video .*video=true \| art=true" out/thumbs.txt "picture for Clip Video"
+          check "track: Long Song Video .*video=true \| art=true" out/thumbs.txt "picture for Long Song Video"
+          check "^videos=[1-9]" out/yt.txt "YouTube playlist list loaded"
+          check "event: state s=1" out/yt.txt "YouTube playlist plays"
+          check "^single=true$" out/yt1.txt "YouTube single video added"
+          check "event: state s=1" out/yt1.txt "YouTube single video plays"
+          check "^tracks=[1-9]" out/sp.txt "Spotify track list imported"
+          T=$(grep "^time=" out/bg.txt | cut -d= -f2); if [ "${T:-0}" -ge 35 ]; then echo "ok   background time $T s"; else echo "FAIL background time ${T:-?} s"; fail=1; fi
           cat out/play.txt
-          grep -q "^tracks=5$" out/play.txt
-          grep -q "^videos=1$" out/play.txt
+          grep -q "^tracks=6$" out/play.txt
+          grep -q "^videos=2$" out/play.txt
           grep -q "^playing=true$" out/play.txt
           grep -q "^repeat=2$" out/play.txt
           grep -q "track: Night Drive | Necro | CI Album" out/play.txt
           grep -q "track: Lost Signal | Necro |" out/play.txt
           grep -q "^playing=true$" out/video.txt
           T=$(grep "^time=" out/play.txt | cut -d= -f2); test "$T" -ge 2
+          exit $fail
 
       - uses: actions/upload-artifact@v4
         if: always()

@@ -319,8 +319,6 @@ final class Library: ObservableObject {
         }
     }
 
-    func track(_ id: String) -> Track? { byID[id] }
-
     /// Saves a picture for a video and shows it everywhere.
     func setThumbnail(_ id: String, jpg: Data, how: String) {
         guard var t = byID[id], !t.hasArtwork else { return }

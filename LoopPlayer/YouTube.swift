@@ -343,6 +343,8 @@ final class YTController: ObservableObject {
     @Published var message: String?
     @Published var failed = false
     var autoplay = false
+    /// Videos refused in a row; after a few, stop skipping (YouTube is refusing this phone, not one video).
+    var refusedInARow = 0
 
     /// Events, kept for the automatic simulator test.
     static var testLog: [String] = []
@@ -611,14 +613,18 @@ struct YTPlayerWeb: UIViewRepresentable {
                 case "state":
                     ctl.playing = state == 1 || state == 3
                     if !vid.isEmpty { ctl.currentID = vid }
-                    if state == 1 { ctl.message = nil }
+                    if state == 1 { ctl.message = nil; ctl.refusedInARow = 0 }
                     if state == 5 && ctl.autoplay { ctl.autoplay = false; ctl.play() }
                 case "list":
                     if ids != ctl.order { ctl.order = ids }
                     if !ctl.shuffle && !shuffled { onList(ids) }
                 case "error":
                     switch code {
+                    case 100, 101, 150 where ctl.refusedInARow >= 2:
+                        ctl.refusedInARow += 1
+                        ctl.message = "YouTube refused several videos in a row. That usually means YouTube wants to check you're not a bot (the player then says \"Sign in\"). Play one video in the YouTube app or Safari, then come back, or use Open in YouTube."
                     case 100, 101, 150:
+                        ctl.refusedInARow += 1
                         ctl.message = single
                             ? "This video can't be played outside YouTube (removed, private, or its owner turned that off)."
                             : "A video in this playlist can't be played outside YouTube (removed, private, or embedding turned off). Skipped."

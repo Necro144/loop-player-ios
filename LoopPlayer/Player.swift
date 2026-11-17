@@ -961,7 +961,7 @@ enum FileAccess {
     static func ensureLocal(_ url: URL) async -> Bool {
         // Streamed songs (Suno) need nothing on the phone.
         if !url.isFileURL { return true }
-        await withCheckedContinuation { cont in
+        return await withCheckedContinuation { cont in
             DispatchQueue.global(qos: .userInitiated).async {
                 cont.resume(returning: ensureLocalSync(url))
             }

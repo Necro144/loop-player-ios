@@ -19,12 +19,23 @@ jobs:
 
       - name: Install an iOS 16.4 simulator runtime
         run: |
-          xcodebuild -downloadPlatform iOS -buildVersion 16.4 2>&1 | tail -n 5 || echo "download failed"
+          for i in 1 2 3; do
+            xcrun simctl list runtimes | grep -q "iOS 16.4" && break
+            xcodebuild -downloadPlatform iOS -buildVersion 16.4 2>&1 | tail -n 5 || echo "download failed"
+            xcrun simctl list runtimes | grep -q "iOS 16.4" && break
+            echo "iOS 16.4 not installed yet (try $i)"; sleep 20
+          done
           xcrun simctl list runtimes
 
       - name: Create the simulator
         run: |
           RT=$(xcrun simctl list runtimes | grep -m1 "iOS 16.4" | grep -oE 'com\.apple\.CoreSimulator\.SimRuntime\.iOS-[0-9-]+' | head -1)
+          if [ -z "$RT" ]; then
+            RT=$(xcrun simctl list runtimes | grep -m1 "iOS 18" | grep -oE 'com\.apple\.CoreSimulator\.SimRuntime\.iOS-[0-9-]+' | head -1)
+            echo "::warning::iOS 16.4 could not be installed; testing on $RT"
+          fi
+          echo "Runtime: $RT"
+          echo "Runtime: $RT" >> "$GITHUB_STEP_SUMMARY"
           test -n "$RT"
           UDID=$(xcrun simctl create "iPhone 14 signin" com.apple.CoreSimulator.SimDeviceType.iPhone-14 "$RT")
           echo "UDID=$UDID" >> "$GITHUB_ENV"

@@ -88,7 +88,7 @@ final class SunoStore: ObservableObject {
 
     enum Link { case song(String), playlist(String), short(URL) }
 
-    static func parse(_ text: String) -> Link? {
+    nonisolated static func parse(_ text: String) -> Link? {
         let s = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let r = s.range(of: "https?://[^\\s]+", options: .regularExpression) ?? (s.contains("suno") ? s.startIndex..<s.endIndex : nil),
               let c = URLComponents(string: s[r].hasPrefix("http") ? String(s[r]) : "https://" + s[r]),
@@ -100,7 +100,7 @@ final class SunoStore: ObservableObject {
         return nil
     }
 
-    private static func uuid(_ s: String) -> Bool {
+    nonisolated private static func uuid(_ s: String) -> Bool {
         s.range(of: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", options: .regularExpression) != nil
     }
 

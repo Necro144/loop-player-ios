@@ -21,6 +21,7 @@ final class AppUI: ObservableObject {
     @Published var info: Track?
     @Published var showPhoneBrowser = false
     @Published var openYouTube: OpenID?
+    @Published var showSuno = false
 }
 
 struct OpenID: Identifiable {
@@ -72,6 +73,7 @@ struct LoopPlayerApp: App {
                 .environmentObject(ui)
                 .environmentObject(YouTubeStore.shared)
                 .environmentObject(SpotifyStore.shared)
+                .environmentObject(SunoStore.shared)
                 .preferredColorScheme(.dark)
                 .tint(Theme.accent)
         }
@@ -103,6 +105,11 @@ struct RootView: View {
         }
         .sheet(item: $ui.openYouTube) { o in
             NavigationStack { YouTubePlaylistView(playlistID: o.id) }
+        }
+        .sheet(isPresented: $ui.showSuno) {
+            SunoLinkSheet()
+                .environmentObject(SunoStore.shared)
+                .environmentObject(player)
         }
         .sheet(isPresented: $ui.showPhoneBrowser) {
             PhoneBrowserView()
@@ -299,6 +306,32 @@ enum TestHooks {
                              "videos=\(now?.videos.count ?? 0)",
                              "titled=\(now?.videos.filter { !$0.title.isEmpty }.count ?? 0)"]
                 lines += YTController.testLog.map { "event: \($0)" }
+                try? lines.joined(separator: "\n").write(toFile: out, atomically: true, encoding: .utf8)
+            }
+        }
+        if let link = env["TEST_SUNO"], let out = env["TEST_SUNO_OUT"] {
+            Task { @MainActor in
+                var lines: [String] = []
+                do {
+                    let got = try await SunoStore.shared.add(link)
+                    lines.append("songs=\(got.count)")
+                    lines += got.prefix(3).map { "song: \($0.title) | \($0.artist) | \(Int($0.duration)) | \($0.stream)" }
+                    Player.shared.play(got.prefix(1).map { SunoStore.shared.track($0) })
+                } catch {
+                    lines.append("error=\(error.localizedDescription)")
+                }
+                let wait = Double(env["TEST_SUNO_WAIT"] ?? "25") ?? 25
+                try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+                let p = Player.shared
+                lines.append("playing=\(p.isPlaying)")
+                lines.append("time=\(Int(p.clock.time))")
+                lines.append("duration=\(Int(p.clock.duration))")
+                lines.append("current=\(p.current?.title ?? "-")")
+                lines.append("art=\(p.current?.hasArtwork ?? false)")
+                let info = MPNowPlayingInfoCenter.default().nowPlayingInfo
+                lines.append("nowPlayingTitle=\((info?[MPMediaItemPropertyTitle] as? String) ?? "-")")
+                lines.append("lists=\(SunoStore.shared.lists.count)")
+                lines.append(contentsOf: FolderLog.read().suffix(15).map { "log: \($0)" })
                 try? lines.joined(separator: "\n").write(toFile: out, atomically: true, encoding: .utf8)
             }
         }

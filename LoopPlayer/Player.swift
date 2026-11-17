@@ -959,6 +959,8 @@ enum NowPlayingArt {
 /// Makes sure a file is on the phone before it is played (downloads it from iCloud Drive if needed).
 enum FileAccess {
     static func ensureLocal(_ url: URL) async -> Bool {
+        // Streamed songs (Suno) need nothing on the phone.
+        if !url.isFileURL { return true }
         await withCheckedContinuation { cont in
             DispatchQueue.global(qos: .userInitiated).async {
                 cont.resume(returning: ensureLocalSync(url))
@@ -995,6 +997,7 @@ enum FileAccess {
     }
 
     static func prefetch(_ url: URL) {
+        if !url.isFileURL { return }
         // Fully downloaded ahead of time, so the next song starts without a silent wait
         // (iOS may suspend an app that is silent in the background).
         DispatchQueue.global(qos: .utility).async {

@@ -81,7 +81,7 @@ jobs:
           launch SIMCTL_CHILD_TEST_TAB=4; sleep 4; shoot 7-settings
           ls -l shots
 
-      - name: Video pictures, background play, YouTube and Spotify
+      - name: Video pictures, background play, YouTube, Spotify and Suno
         run: |
           shoot () { xcrun simctl io "$UDID" screenshot "shots/$1.png"; }
           launch () {
@@ -112,6 +112,14 @@ jobs:
           launch SIMCTL_CHILD_TEST_TAB=3 SIMCTL_CHILD_TEST_SPOTIFY="https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M"                  SIMCTL_CHILD_TEST_SP_OUT="$GITHUB_WORKSPACE/out/sp.txt"
           waitfor out/sp.txt
           sleep 2; shoot 13-playlists-tab
+          # 9. Suno: stream a public song, go to another app, keep playing; then a playlist
+          launch SIMCTL_CHILD_TEST_TAB=0 SIMCTL_CHILD_TEST_SUNO="https://suno.com/song/538ab4ae-3ace-4abf-95f9-be0bed53b65d"                  SIMCTL_CHILD_TEST_SUNO_WAIT=40 SIMCTL_CHILD_TEST_SUNO_OUT="$GITHUB_WORKSPACE/out/suno.txt"
+          sleep 14; shoot 14-suno-playing
+          xcrun simctl launch "$UDID" com.apple.Preferences
+          waitfor out/suno.txt
+          launch SIMCTL_CHILD_TEST_TAB=3 SIMCTL_CHILD_TEST_SUNO="https://suno.com/playlist/990fd5fe-70d2-449b-8a4d-3cb0a7d3e805"                  SIMCTL_CHILD_TEST_SUNO_WAIT=15 SIMCTL_CHILD_TEST_SUNO_OUT="$GITHUB_WORKSPACE/out/suno-list.txt"
+          waitfor out/suno-list.txt
+          sleep 2; shoot 15-suno-playlists
 
       - name: Check the results
         run: |
@@ -122,6 +130,12 @@ jobs:
           check "^bgPauses=0$" out/bg.txt "no stop-and-start when leaving the app"
           check "^nowPlayingTitle=Long Song Video$" out/bg.txt "lock screen info set"
           check "^nowPlayingArtwork=true$" out/bg.txt "lock screen artwork set"
+          check "^songs=1$" out/suno.txt "Suno song link read"
+          check "^playing=true$" out/suno.txt "Suno song streams (also in the background)"
+          check "^time=([2-9][0-9]|[1-9][0-9][0-9])$" out/suno.txt "Suno song played 20 s or more"
+          check "^nowPlayingTitle=Porch Light On$" out/suno.txt "Suno song on the lock screen"
+          check "^songs=[1-9]" out/suno-list.txt "Suno playlist read"
+          check "^playing=true$" out/suno-list.txt "Suno playlist plays"
           check "track: Clip Video .*video=true \| art=true" out/thumbs.txt "picture for Clip Video"
           check "track: Long Song Video .*video=true \| art=true" out/thumbs.txt "picture for Long Song Video"
           check "^videos=[1-9]" out/yt.txt "YouTube playlist list loaded"

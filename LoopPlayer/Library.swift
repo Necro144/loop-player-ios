@@ -189,11 +189,13 @@ final class Library: ObservableObject {
     func folder(_ id: UUID) -> FolderSource? { folders.first { $0.id == id } }
 
     func url(for track: Track) -> URL? {
-        folderURLs[track.folderID]?.appendingPathComponent(track.relativePath)
+        if track.folderID == SunoStore.folderID { return SunoStore.shared.streamURL(track) }
+        return folderURLs[track.folderID]?.appendingPathComponent(track.relativePath)
     }
 
-    func track(_ id: String) -> Track? { byID[id] }
-    func lookup(_ ids: [String]) -> [Track] { ids.compactMap { byID[$0] } }
+    /// Songs in the library, or streamed Suno songs.
+    func track(_ id: String) -> Track? { byID[id] ?? SunoStore.shared.track(id) }
+    func lookup(_ ids: [String]) -> [Track] { ids.compactMap { byID[$0] ?? SunoStore.shared.track($0) } }
 
     // MARK: Scanning
 
@@ -365,6 +367,7 @@ final class Library: ObservableObject {
         FolderLog.append("Cache cleared (\(ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)))")
         // Song covers come back from the files' tags with a scan; video pictures from the fill pass.
         rescan()
+        Task { await SunoStore.shared.fetchMissingCovers() }
         return ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
     }
 

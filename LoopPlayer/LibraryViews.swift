@@ -6,6 +6,8 @@ struct HomeView: View {
     @EnvironmentObject var library: Library
     @EnvironmentObject var player: Player
     @EnvironmentObject var store: UserStore
+    @EnvironmentObject var suno: SunoStore
+    @EnvironmentObject var ui: AppUI
 
     var body: some View {
         let recent = library.lookup(Array(store.recent.prefix(20)))
@@ -29,8 +31,28 @@ struct HomeView: View {
                 }
                 .padding(.horizontal)
 
+                Button { ui.showSuno = true } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "waveform")
+                        Text("Play a Suno Link").font(.headline)
+                        Spacer()
+                        Image(systemName: "link")
+                    }
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 16)
+                    .frame(height: 48)
+                    .background(LinearGradient(colors: [Color(red: 0.98, green: 0.45, blue: 0.2).opacity(0.85), Color(red: 0.55, green: 0.1, blue: 0.45).opacity(0.85)],
+                                               startPoint: .leading, endPoint: .trailing),
+                                in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal)
+
                 if !recent.isEmpty {
                     Shelf(title: "Recently Played", tracks: recent)
+                }
+                if !suno.songs.isEmpty {
+                    Shelf(title: "Suno", tracks: Array(suno.tracks.prefix(20)))
                 }
                 if !favorites.isEmpty {
                     Shelf(title: "Favorites", tracks: Array(favorites.prefix(20)))
@@ -540,6 +562,8 @@ struct PlaylistsView: View {
     @EnvironmentObject var store: UserStore
     @EnvironmentObject var yt: YouTubeStore
     @EnvironmentObject var sp: SpotifyStore
+    @EnvironmentObject var suno: SunoStore
+    @EnvironmentObject var ui: AppUI
     @State private var importingYT = false
     @State private var importingSP = false
     @State private var naming = false
@@ -575,6 +599,43 @@ struct PlaylistsView: View {
             }
             .onDelete { offsets in
                 for o in offsets { store.deletePlaylist(store.playlists[o].id) }
+            }
+            Section {
+                Button { ui.showSuno = true } label: {
+                    Label("Play a Suno Link", systemImage: "waveform")
+                        .font(.headline)
+                        .foregroundColor(Theme.accent)
+                }
+                .listRowBackground(Theme.bg)
+                if !suno.songs.isEmpty {
+                    NavigationLink { SunoSongsView() } label: {
+                        HStack(spacing: 12) {
+                            SunoCover()
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Suno Songs").lineLimit(1)
+                                Text("\(suno.songs.count) songs · streamed").font(.caption).foregroundColor(Theme.dim)
+                            }
+                        }
+                    }
+                    .listRowBackground(Theme.bg)
+                }
+                ForEach(suno.lists) { l in
+                    NavigationLink { SunoSongsView(listID: l.id) } label: {
+                        HStack(spacing: 12) {
+                            SunoCover()
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(l.title).lineLimit(1)
+                                Text("Suno playlist · \(l.songIDs.count) songs").font(.caption).foregroundColor(Theme.dim)
+                            }
+                        }
+                    }
+                    .listRowBackground(Theme.bg)
+                }
+                .onDelete { offsets in
+                    for o in offsets { suno.deleteList(suno.lists[o].id) }
+                }
+            } header: {
+                Text("Suno")
             }
             Section {
                 Button { importingYT = true } label: {

@@ -22,6 +22,7 @@ final class AppUI: ObservableObject {
     @Published var showPhoneBrowser = false
     @Published var openYouTube: OpenID?
     @Published var showSuno = false
+    @Published var showSunoSignIn = false
 }
 
 struct OpenID: Identifiable {
@@ -110,6 +111,9 @@ struct RootView: View {
             SunoLinkSheet()
                 .environmentObject(SunoStore.shared)
                 .environmentObject(player)
+        }
+        .sheet(isPresented: $ui.showSunoSignIn) {
+            SunoSignInView().environmentObject(SunoAuth.shared)
         }
         .sheet(isPresented: $ui.showPhoneBrowser) {
             PhoneBrowserView()
@@ -309,6 +313,9 @@ enum TestHooks {
                 try? lines.joined(separator: "\n").write(toFile: out, atomically: true, encoding: .utf8)
             }
         }
+        if env["TEST_SUNO_SIGNIN"] == "1" {
+            AppUI.shared.showSunoSignIn = true
+        }
         if let link = env["TEST_SUNO"], let out = env["TEST_SUNO_OUT"] {
             Task { @MainActor in
                 var lines: [String] = []
@@ -331,6 +338,7 @@ enum TestHooks {
                 let info = MPNowPlayingInfoCenter.default().nowPlayingInfo
                 lines.append("nowPlayingTitle=\((info?[MPMediaItemPropertyTitle] as? String) ?? "-")")
                 lines.append("lists=\(SunoStore.shared.lists.count)")
+                lines.append("signedIn=\(SunoAuth.shared.signedIn)")
                 lines.append(contentsOf: FolderLog.read().suffix(15).map { "log: \($0)" })
                 try? lines.joined(separator: "\n").write(toFile: out, atomically: true, encoding: .utf8)
             }

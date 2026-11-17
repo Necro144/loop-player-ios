@@ -1,4 +1,5 @@
 import SwiftUI
+import AVFoundation
 
 // Suno songs stream from Suno's public files, the same files suno.com plays for a visitor who is
 // not signed in. Nothing is saved except the cover picture. The song plays in the normal player,
@@ -16,6 +17,9 @@ struct SunoSong: Codable, Identifiable, Hashable {
     var stream: String
     var image: String?
     var added: Date
+    /// Added while signed in (own or private song): the file is looked up again with the
+    /// sign-in each time it plays.
+    var auth: Bool? = nil
 }
 
 struct SunoList: Codable, Identifiable, Hashable {
@@ -104,7 +108,10 @@ final class SunoStore: ObservableObject {
         s.range(of: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", options: .regularExpression) != nil
     }
 
-    struct SunoError: LocalizedError { let errorDescription: String? }
+    struct SunoError: LocalizedError {
+        let errorDescription: String?
+        var needsSignIn = false
+    }
 
     /// Adds a song (or every song of a playlist). Returns the songs to play.
     func add(_ link: String) async throws -> [SunoSong] {
@@ -116,11 +123,26 @@ final class SunoStore: ObservableObject {
         }
         switch parsed {
         case .song(let id):
-            let song = try await SunoStore.fetchSong(id)
+            var song: SunoSong
+            do {
+                song = try await SunoStore.fetchSong(id, token: nil)
+            } catch {
+                FolderLog.append("Suno: \(id) has no public file (\(error.localizedDescription))")
+                guard SunoAuth.shared.signedIn else {
+                    throw SunoError(errorDescription: "This song has no public file on Suno (it is private or unlisted). Sign in to Suno to play your own songs.", needsSignIn: true)
+                }
+                guard let tok = await SunoAuth.shared.token() else {
+                    throw SunoError(errorDescription: "Suno didn't accept the sign-in. Sign in to Suno again (Settings > Suno).", needsSignIn: true)
+                }
+                song = try await SunoStore.fetchSong(id, token: tok)
+                song.auth = true
+            }
             insert([song])
             return [song]
         case .playlist(let id):
-            let (title, found) = try await SunoStore.fetchPlaylist(id)
+            let tok = await SunoAuth.shared.token()
+            var (title, found) = try await SunoStore.fetchPlaylist(id, token: tok)
+            if tok != nil { for i in found.indices { found[i].auth = true } }
             insert(found)
             if let i = lists.firstIndex(where: { $0.sunoID == id }) {
                 lists[i].songIDs = found.map(\.id)
@@ -133,6 +155,40 @@ final class SunoStore: ObservableObject {
         case .short:
             throw SunoError(errorDescription: "This short link didn't lead to a song.")
         }
+    }
+
+    /// The file to play and how to open it. Songs added while signed in are looked up again
+    /// with a fresh sign-in token (Suno's signed links last about an hour).
+    func prepare(_ t: Track) async -> (URL, [String: Any])? {
+        let clip = ((t.relativePath as NSString).lastPathComponent as NSString).deletingPathExtension
+        guard let s = byID[clip] else { return nil }
+        guard s.auth == true, let tok = await SunoAuth.shared.token() else {
+            return URL(string: s.stream).map { ($0, [:]) }
+        }
+        do {
+            let c = try await SunoStore.getJSON("https://studio-api.prod.suno.com/api/clip/\(clip)", token: tok)
+            if let fresh = await SunoStore.song(from: c, token: tok), let url = URL(string: fresh.stream) {
+                if fresh.stream != s.stream, let i = songs.firstIndex(where: { $0.id == clip }) {
+                    songs[i].stream = fresh.stream
+                    save()
+                }
+                return (url, await SunoStore.options(for: url, token: tok))
+            }
+        } catch {
+            FolderLog.append("Suno: lookup of \(s.title) failed: \(error.localizedDescription)")
+        }
+        guard let url = URL(string: s.stream) else { return nil }
+        return (url, await SunoStore.options(for: url, token: tok))
+    }
+
+    /// Sign-in header and cookies for Suno's own servers (never sent to other hosts).
+    static func options(for url: URL, token: String?) async -> [String: Any] {
+        guard let host = url.host?.lowercased(), host.hasSuffix("suno.com") || host.hasSuffix("suno.ai") else { return [:] }
+        var o: [String: Any] = [:]
+        if let token { o["AVURLAssetHTTPHeaderFieldsKey"] = ["Authorization": "Bearer \(token)", "User-Agent": ua] }
+        let cookies = await SunoAuth.shared.cookies(for: url)
+        if !cookies.isEmpty { o[AVURLAssetHTTPCookiesKey] = cookies }
+        return o
     }
 
     private func insert(_ new: [SunoSong]) {
@@ -179,22 +235,26 @@ final class SunoStore: ObservableObject {
         }
     }
 
-    // MARK: Suno's public API (the one suno.com uses for visitors)
+    // MARK: Suno's API (the calls suno.com makes; with a token when signed in)
 
     nonisolated static let ua = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.4 Mobile/15E148 Safari/604.1"
 
-    nonisolated static func getJSON(_ s: String) async throws -> [String: Any] {
+    nonisolated static func getJSON(_ s: String, token: String? = nil) async throws -> [String: Any] {
         guard let url = URL(string: s) else { throw SunoError(errorDescription: "Bad link.") }
         var req = URLRequest(url: url, timeoutInterval: 30)
         req.setValue(ua, forHTTPHeaderField: "User-Agent")
+        if let token { req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         let result: (Data, URLResponse)
         do { result = try await URLSession.shared.data(for: req) } catch {
             throw SunoError(errorDescription: "Couldn't reach Suno: \(error.localizedDescription)")
         }
         let code = (result.1 as? HTTPURLResponse)?.statusCode ?? 0
         guard code == 200, let obj = (try? JSONSerialization.jsonObject(with: result.0)) as? [String: Any] else {
+            if token == nil && (code == 404 || code == 403 || code == 401) {
+                throw SunoError(errorDescription: "Suno says this song or playlist is private or doesn't exist. Sign in to Suno to play your own songs.", needsSignIn: true)
+            }
             throw SunoError(errorDescription: code == 404 || code == 403 || code == 401
-                            ? "Suno says this song or playlist is private or doesn't exist. Only public songs can be streamed: in Suno make it public, then copy the link again."
+                            ? "Suno says this song isn't yours or doesn't exist (\(code))."
                             : "Suno answered with an error (\(code)). Try again later.")
         }
         return obj
@@ -218,48 +278,67 @@ final class SunoStore: ObservableObject {
 
     nonisolated private static func isShort(_ l: Link) -> Bool { if case .short = l { return true } else { return false } }
 
-    nonisolated static func fetchSong(_ id: String) async throws -> SunoSong {
-        let c = try await getJSON("https://studio-api.prod.suno.com/api/clip/\(id)")
-        guard let found = await song(from: c) else {
-            throw SunoError(errorDescription: "Suno has no public file for this song yet (it may still be making it, or it is private).")
+    nonisolated static func fetchSong(_ id: String, token: String?) async throws -> SunoSong {
+        let c = try await getJSON("https://studio-api.prod.suno.com/api/clip/\(id)", token: token)
+        guard let found = await song(from: c, token: token) else {
+            if (c["status"] as? String).map({ $0 != "complete" }) == true {
+                throw SunoError(errorDescription: "Suno is still making this song. Try again in a minute.")
+            }
+            throw SunoError(errorDescription: token == nil
+                            ? "Suno has no public file for this song (it is private or unlisted). Sign in to Suno to play your own songs."
+                            : "Suno gave no playable file for this song, even signed in. Settings > Folder Log shows what was tried.",
+                            needsSignIn: token == nil)
         }
         return found
     }
 
-    nonisolated static func fetchPlaylist(_ id: String) async throws -> (String, [SunoSong]) {
+    nonisolated static func fetchPlaylist(_ id: String, token: String?) async throws -> (String, [SunoSong]) {
         var title = "Suno Playlist"
         var out: [SunoSong] = []
         for page in 1...20 {
-            let p = try await getJSON("https://studio-api.prod.suno.com/api/playlist/\(id)/?page=\(page)")
+            let p = try await getJSON("https://studio-api.prod.suno.com/api/playlist/\(id)/?page=\(page)", token: token)
             if let n = p["name"] as? String, !n.isEmpty { title = n }
             let items = (p["playlist_clips"] as? [[String: Any]]) ?? []
             for item in items {
-                if let c = item["clip"] as? [String: Any], let s = await song(from: c, check: false),
+                if let c = item["clip"] as? [String: Any], let s = await song(from: c, token: token, check: false),
                    !out.contains(where: { $0.id == s.id }) { out.append(s) }
             }
             let total = (p["num_total_results"] as? Int) ?? 0
             if items.isEmpty || out.count >= total { break }
         }
-        guard !out.isEmpty else { throw SunoError(errorDescription: "This playlist has no public songs.") }
+        guard !out.isEmpty else { throw SunoError(errorDescription: "This playlist has no songs that can be played.") }
         return (title, out)
     }
 
-    /// Picks a file iOS 16 can stream: a real audio_url if Suno gives one, else the public video.
-    nonisolated static func song(from c: [String: Any], check: Bool = true) async -> SunoSong? {
+    /// Picks a file iOS 16 can stream, in this order: the song's own audio (mp3), Suno's
+    /// download link when the song is already unlocked (signed in only; never unlocks a song or
+    /// uses a download), the public video (H.264 + AAC). Opus .m4a files are skipped.
+    nonisolated static func song(from c: [String: Any], token: String? = nil, check: Bool = true) async -> SunoSong? {
         guard let id = c["id"] as? String else { return nil }
         let meta = c["metadata"] as? [String: Any] ?? [:]
         var candidates: [String] = []
         if let a = c["audio_url"] as? String, a.hasPrefix("https://"), !a.contains("/forbidden"),
-           !a.lowercased().hasSuffix(".m4a") { candidates.append(a) }
+           !(URL(string: a)?.pathExtension.lowercased() == "m4a") { candidates.append(a) }
+        candidates.append("https://cdn1.suno.ai/\(id).mp3")
         if let v = c["video_url"] as? String, v.hasPrefix("https://") { candidates.append(v) }
         candidates.append("https://cdn1.suno.ai/\(id).mp4")
         var stream: String?
         if check {
             for u in candidates {
-                if await reachable(u) { stream = u; break }
+                if await reachable(u, token: token) { stream = u; break }
+                // After the plain audio failed: Suno's download link, only for unlocked songs.
+                if u == "https://cdn1.suno.ai/\(id).mp3", let token, (c["is_download_unlocked"] as? Bool) == true,
+                   let d = await downloadLink(id, token: token), await reachable(d, token: nil) {
+                    stream = d
+                    break
+                }
+            }
+            if stream == nil {
+                let tried = candidates.joined(separator: ", ")
+                await MainActor.run { FolderLog.append("Suno: no playable file for \(id). Tried: \(tried)") }
             }
         } else {
-            stream = candidates.first
+            stream = candidates.last
         }
         guard let stream else { return nil }
         let title = (c["title"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "Suno song"
@@ -269,14 +348,30 @@ final class SunoStore: ObservableObject {
         return SunoSong(id: id, title: title, artist: artist, duration: duration, stream: stream, image: image, added: Date())
     }
 
-    nonisolated static func reachable(_ s: String) async -> Bool {
+    /// Suno's own download link (a signed file link that lasts about an hour).
+    nonisolated static func downloadLink(_ id: String, token: String) async -> String? {
+        for _ in 0..<6 {
+            guard let d = try? await getJSON("https://suno.com/a/api/download/clip/\(id)?format=mp3", token: token) else { return nil }
+            if let u = d["download_url"] as? String, u.hasPrefix("https://") { return u }
+            if (d["status"] as? String) != "processing" { return nil }
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+        }
+        return nil
+    }
+
+    nonisolated static func reachable(_ s: String, token: String? = nil) async -> Bool {
         guard let url = URL(string: s) else { return false }
         var req = URLRequest(url: url, timeoutInterval: 20)
         req.setValue("bytes=0-1", forHTTPHeaderField: "Range")
         req.setValue(ua, forHTTPHeaderField: "User-Agent")
+        let host = url.host?.lowercased() ?? ""
+        if let token, host.hasSuffix("suno.com") || host.hasSuffix("suno.ai") {
+            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
         guard let r = try? await URLSession.shared.data(for: req) else { return false }
         let code = (r.1 as? HTTPURLResponse)?.statusCode ?? 0
-        return code == 200 || code == 206
+        let type = ((r.1 as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Type") ?? "").lowercased()
+        return (code == 200 || code == 206) && !type.contains("xml") && !type.contains("json") && !type.contains("html")
     }
 }
 
@@ -285,10 +380,13 @@ final class SunoStore: ObservableObject {
 struct SunoLinkSheet: View {
     @EnvironmentObject var suno: SunoStore
     @EnvironmentObject var player: Player
+    @ObservedObject private var auth = SunoAuth.shared
     @Environment(\.dismiss) private var dismiss
     @State private var link = ""
     @State private var error: String?
+    @State private var needsSignIn = false
     @State private var working = false
+    @State private var signingIn = false
 
     var body: some View {
         NavigationStack {
@@ -310,6 +408,20 @@ struct SunoLinkSheet: View {
                 }
                 if let error {
                     Text(error).foregroundColor(.orange).font(.subheadline)
+                }
+                Section {
+                    if let user = auth.user {
+                        Label("Signed in to Suno as \(user)", systemImage: "checkmark.seal.fill")
+                            .foregroundColor(.green)
+                    } else {
+                        Button { signingIn = true } label: {
+                            Label("Sign in to Suno (for your own songs)", systemImage: "person.crop.circle.badge.checkmark")
+                                .foregroundColor(needsSignIn ? .white : Theme.accent)
+                        }
+                        .listRowBackground(needsSignIn ? Theme.accent.opacity(0.6) : Theme.surface2)
+                    }
+                } footer: {
+                    Text("Public songs play without signing in. Your private and unlisted songs need you signed in to Suno.")
                 }
                 Section {
                     Text("Songs stream from Suno like on suno.com: nothing is downloaded (only the cover picture is kept). Public songs work. Loop, speed, background play and the lock screen work like with your own songs. Needs internet while playing.")
@@ -336,6 +448,12 @@ struct SunoLinkSheet: View {
             .onAppear {
                 if link.isEmpty, let s = UIPasteboard.general.string, SunoStore.parse(s) != nil { link = s }
             }
+            .sheet(isPresented: $signingIn, onDismiss: {
+                // Signed in from here: try the link again.
+                if auth.signedIn && needsSignIn && !link.isEmpty { go() }
+            }) {
+                SunoSignInView().environmentObject(SunoAuth.shared)
+            }
         }
         .preferredColorScheme(.dark)
     }
@@ -343,6 +461,7 @@ struct SunoLinkSheet: View {
     private func go() {
         working = true
         error = nil
+        needsSignIn = false
         Task {
             do {
                 let got = try await suno.add(link)
@@ -356,6 +475,7 @@ struct SunoLinkSheet: View {
             } catch {
                 working = false
                 self.error = error.localizedDescription
+                needsSignIn = (error as? SunoStore.SunoError)?.needsSignIn == true && !auth.signedIn
             }
         }
     }

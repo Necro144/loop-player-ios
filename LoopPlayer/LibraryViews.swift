@@ -838,6 +838,8 @@ struct SettingsView: View {
     @State private var clearing = false
     @State private var ytKey = UserDefaults.standard.string(forKey: "ytApiKey") ?? ""
     @State private var lockReport: [String]?
+    @ObservedObject private var suno = SunoAuth.shared
+    @State private var sunoSignIn = false
 
     var body: some View {
         List {
@@ -944,6 +946,26 @@ struct SettingsView: View {
             }
 
             Section {
+                if let user = suno.user {
+                    HStack {
+                        Label("Signed in as \(user)", systemImage: "checkmark.seal.fill").foregroundColor(.green)
+                        Spacer()
+                    }
+                    Button(role: .destructive) { Task { await suno.signOut() } } label: {
+                        Label("Sign Out of Suno", systemImage: "rectangle.portrait.and.arrow.right")
+                    }
+                } else {
+                    Button { sunoSignIn = true } label: {
+                        Label("Sign in to Suno", systemImage: "person.crop.circle.badge.checkmark")
+                    }
+                }
+            } header: {
+                Text("Suno")
+            } footer: {
+                Text("Sign in to play your own private or unlisted Suno songs from their links. You sign in on Suno's own page; Loop Player never sees your password. Songs still stream: nothing is downloaded.")
+            }
+
+            Section {
                 SecureField("YouTube API key (optional)", text: $ytKey)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
@@ -975,6 +997,7 @@ struct SettingsView: View {
         .background(Theme.bg)
         .navigationTitle("Settings")
         .sheet(isPresented: $showSpeed) { SpeedSheet() }
+        .sheet(isPresented: $sunoSignIn) { SunoSignInView().environmentObject(SunoAuth.shared) }
         .confirmationDialog("Clear the cache? Pictures and YouTube's stored data are deleted and made again. Your songs, playlists and settings stay.", isPresented: $confirmCache, titleVisibility: .visible) {
             Button("Clear Cache", role: .destructive) {
                 clearing = true

@@ -453,7 +453,14 @@ final class Player: ObservableObject {
                 self.failed(track, "Couldn't open \(track.fileName)")
                 return
             }
-            let item = AVPlayerItem(url: url)
+            var playURL = url
+            var options: [String: Any] = [:]
+            if track.folderID == SunoStore.folderID {
+                // Suno: songs added while signed in get a fresh link and the sign-in.
+                if let p = await SunoStore.shared.prepare(track) { playURL = p.0; options = p.1 }
+                guard token == self.loadToken else { return }
+            }
+            let item = AVPlayerItem(asset: AVURLAsset(url: playURL, options: options))
             item.audioTimePitchAlgorithm = self.pitchAlgorithm
             if track.isVideo && !track.hasArtwork { self.captureFrame(item, id: track.id, token: token) }
             self.watch(item, token: token)

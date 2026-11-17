@@ -110,6 +110,19 @@ final class SunoAuth: ObservableObject {
 
 // MARK: - Sign-in screen
 
+/// What happened on the sign-in screen (pages opened, pop-up windows, errors). Shown in the
+/// Folder Log, and written to a file in the automatic tap test.
+enum SunoSignInLog {
+    static var lines: [String] = []
+    static func add(_ s: String) {
+        lines.append(s)
+        FolderLog.append("Suno sign-in: \(s)")
+        if let out = ProcessInfo.processInfo.environment["TEST_SUNO_SIGNIN_OUT"] {
+            try? lines.joined(separator: "\n").write(toFile: out, atomically: true, encoding: .utf8)
+        }
+    }
+}
+
 struct SunoSignInView: View {
     @EnvironmentObject var auth: SunoAuth
     @Environment(\.dismiss) private var dismiss
@@ -142,56 +155,191 @@ struct SunoSignInView: View {
             }
         }
         .preferredColorScheme(.dark)
+        // Swiping down must not fight with scrolling and tapping on Suno's page.
+        .interactiveDismissDisabled()
     }
 }
 
+/// Suno's sign-in page. "Continue with Google / Apple / Discord / Facebook / Microsoft" open a
+/// second (pop-up) window; 1.2.1 refused those windows, so tapping the buttons did nothing.
+/// Pop-ups now open on top of the page, inside the app, with a bar to go back.
 struct SunoSignInWeb: UIViewRepresentable {
     let onSignedIn: (String) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(onSignedIn: onSignedIn) }
 
-    func makeUIView(context: Context) -> WKWebView {
+    func makeUIView(context: Context) -> UIView {
+        let box = UIView()
+        box.backgroundColor = .black
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
-        let w = WKWebView(frame: .zero, configuration: config)
+        config.preferences.javaScriptCanOpenWindowsAutomatically = true
+        config.userContentController.add(context.coordinator, name: "signinlog")
+        config.userContentController.addUserScript(WKUserScript(source: Coordinator.logScript, injectionTime: .atDocumentStart, forMainFrameOnly: false))
+        let w = WKWebView(frame: box.bounds, configuration: config)
+        w.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         // Google and Apple sign-in refuse in-app browsers that don't say they're Safari.
         w.customUserAgent = SunoAuth.safariUA
         w.uiDelegate = context.coordinator
         w.navigationDelegate = context.coordinator
+        w.allowsBackForwardNavigationGestures = true
+        box.addSubview(w)
+        context.coordinator.box = box
+        context.coordinator.main = w
+        SunoSignInLog.add("open https://suno.com/sign-in")
         w.load(URLRequest(url: URL(string: "https://suno.com/sign-in")!))
-        context.coordinator.start(w)
-        return w
+        context.coordinator.start()
+        return box
     }
 
-    func updateUIView(_ uiView: WKWebView, context: Context) {}
+    func updateUIView(_ uiView: UIView, context: Context) {}
 
-    static func dismantleUIView(_ uiView: WKWebView, coordinator: Coordinator) { coordinator.timer?.invalidate() }
+    static func dismantleUIView(_ uiView: UIView, coordinator: Coordinator) {
+        coordinator.timer?.invalidate()
+        coordinator.main?.configuration.userContentController.removeScriptMessageHandler(forName: "signinlog")
+    }
 
-    final class Coordinator: NSObject, WKUIDelegate, WKNavigationDelegate {
+    final class Coordinator: NSObject, WKUIDelegate, WKNavigationDelegate, WKScriptMessageHandler {
         let onSignedIn: (String) -> Void
         var timer: Timer?
-        weak var web: WKWebView?
+        weak var box: UIView?
+        weak var main: WKWebView?
+        /// Open pop-up windows (newest last), each with its bar.
+        var popups: [(UIView, WKWebView)] = []
+
         init(onSignedIn: @escaping (String) -> Void) { self.onSignedIn = onSignedIn }
 
-        func start(_ w: WKWebView) {
-            web = w
+        static let logScript = """
+        (function(){
+          function post(m){ try { window.webkit.messageHandlers.signinlog.postMessage(String(m).slice(0,300)); } catch(e){} }
+          window.addEventListener('error', function(e){ post('js error: ' + e.message); });
+          window.addEventListener('unhandledrejection', function(e){ post('js promise error: ' + (e.reason && (e.reason.message || e.reason))); });
+          var oe = console.error; console.error = function(){ post('console: ' + Array.prototype.join.call(arguments, ' ')); oe.apply(console, arguments); };
+        })();
+        """
+
+        func start() {
             timer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in self?.check() }
         }
 
         private func check() {
             let js = "(window.Clerk && window.Clerk.user) ? (window.Clerk.user.username || window.Clerk.user.fullName || (window.Clerk.user.primaryEmailAddress && window.Clerk.user.primaryEmailAddress.emailAddress) || 'your account') : ''"
-            web?.evaluateJavaScript(js) { [weak self] r, _ in
+            main?.evaluateJavaScript(js) { [weak self] r, _ in
                 guard let self, let name = r as? String, !name.isEmpty else { return }
                 self.timer?.invalidate()
+                SunoSignInLog.add("signed in")
+                self.closeAllPopups()
                 self.onSignedIn(name)
             }
         }
 
-        // Sign-in with Google/Apple may try to open a new window: open it here instead.
+        func userContentController(_ uc: WKUserContentController, didReceive message: WKScriptMessage) {
+            if let s = message.body as? String { SunoSignInLog.add(s) }
+        }
+
+        // MARK: Pop-up windows (Google, Apple, Discord, Facebook, Microsoft)
+
         func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
                      for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-            if navigationAction.targetFrame == nil { webView.load(navigationAction.request) }
-            return nil
+            let target = navigationAction.request.url?.absoluteString ?? ""
+            SunoSignInLog.add("popup " + (target.isEmpty ? "(blank)" : target))
+            guard let box else { return nil }
+            let holder = UIView(frame: box.bounds)
+            holder.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            holder.backgroundColor = .black
+            let bar = UIView(frame: CGRect(x: 0, y: 0, width: box.bounds.width, height: 44))
+            bar.autoresizingMask = [.flexibleWidth]
+            bar.backgroundColor = UIColor(white: 0.12, alpha: 1)
+            let back = UIButton(type: .system)
+            back.setTitle("‹ Back to Suno", for: .normal)
+            back.titleLabel?.font = .systemFont(ofSize: 16, weight: .semibold)
+            back.tintColor = UIColor(red: 1.0, green: 0.27, blue: 0.47, alpha: 1)
+            back.frame = CGRect(x: 8, y: 0, width: 160, height: 44)
+            back.contentHorizontalAlignment = .left
+            back.accessibilityIdentifier = "suno-popup-back"
+            back.addTarget(self, action: #selector(closeTopPopup), for: .touchUpInside)
+            bar.addSubview(back)
+            // The pop-up must use the configuration WebKit gives, so it stays linked to Suno's page.
+            let pop = WKWebView(frame: CGRect(x: 0, y: 44, width: box.bounds.width, height: box.bounds.height - 44), configuration: configuration)
+            pop.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            pop.customUserAgent = SunoAuth.safariUA
+            pop.uiDelegate = self
+            pop.navigationDelegate = self
+            holder.addSubview(pop)
+            holder.addSubview(bar)
+            box.addSubview(holder)
+            popups.append((holder, pop))
+            return pop
+        }
+
+        func webViewDidClose(_ webView: WKWebView) {
+            SunoSignInLog.add("popup closed by the page")
+            if let i = popups.firstIndex(where: { $0.1 === webView }) {
+                popups[i].0.removeFromSuperview()
+                popups.remove(at: i)
+            }
+            check()
+        }
+
+        @objc func closeTopPopup() {
+            guard let last = popups.popLast() else { return }
+            SunoSignInLog.add("popup closed with Back")
+            last.1.stopLoading()
+            last.0.removeFromSuperview()
+            check()
+        }
+
+        private func closeAllPopups() {
+            for p in popups { p.0.removeFromSuperview() }
+            popups.removeAll()
+        }
+
+        // MARK: Pages
+
+        func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+                     decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+            if navigationAction.targetFrame?.isMainFrame != false, let u = navigationAction.request.url {
+                let isPopup = webView !== main
+                SunoSignInLog.add((isPopup ? "popup page " : "page ") + (u.host ?? u.absoluteString) + u.path)
+            }
+            decisionHandler(.allow)
+        }
+
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            SunoSignInLog.add("page failed: \(error.localizedDescription)")
+        }
+
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            SunoSignInLog.add("page didn't open: \(error.localizedDescription)")
+        }
+
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            SunoSignInLog.add("page crashed; reloading")
+            webView.reload()
+        }
+
+        // Pages may ask with alert()/confirm(): show them instead of ignoring (which can stall a page).
+        func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String,
+                     initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping () -> Void) {
+            present(message, ok: { completionHandler() }, cancel: nil)
+        }
+
+        func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String,
+                     initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) {
+            present(message, ok: { completionHandler(true) }, cancel: { completionHandler(false) })
+        }
+
+        private func present(_ message: String, ok: @escaping () -> Void, cancel: (() -> Void)?) {
+            SunoSignInLog.add("page message: \(message)")
+            guard let vc = box?.window?.rootViewController?.topMost else { ok(); return }
+            let a = UIAlertController(title: nil, message: message, preferredStyle: .alert)
+            a.addAction(UIAlertAction(title: "OK", style: .default) { _ in ok() })
+            if let cancel { a.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in cancel() }) }
+            vc.present(a, animated: true)
         }
     }
+}
+
+private extension UIViewController {
+    var topMost: UIViewController { presentedViewController?.topMost ?? self }
 }

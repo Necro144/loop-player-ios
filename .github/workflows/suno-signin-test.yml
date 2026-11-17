@@ -1,0 +1,59 @@
+name: Suno sign-in tap test on iOS 16.4
+
+on:
+  # Run by hand or by pushing a signin-* branch.
+  push:
+    branches: ['signin-*']
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tools
+        run: |
+          brew install xcodegen > /dev/null
+          xcodegen generate
+
+      - name: Install an iOS 16.4 simulator runtime
+        run: |
+          xcodebuild -downloadPlatform iOS -buildVersion 16.4 2>&1 | tail -n 5 || echo "download failed"
+          xcrun simctl list runtimes
+
+      - name: Create the simulator
+        run: |
+          RT=$(xcrun simctl list runtimes | grep -m1 "iOS 16.4" | grep -oE 'com\.apple\.CoreSimulator\.SimRuntime\.iOS-[0-9-]+' | head -1)
+          test -n "$RT"
+          UDID=$(xcrun simctl create "iPhone 14 signin" com.apple.CoreSimulator.SimDeviceType.iPhone-14 "$RT")
+          echo "UDID=$UDID" >> "$GITHUB_ENV"
+          xcrun simctl boot "$UDID"
+          xcrun simctl bootstatus "$UDID" -b | tail -n 3
+
+      - name: Tap Continue with Google, Apple and Discord
+        run: |
+          mkdir -p out
+          for attempt in 1 2; do
+            TEST_RUNNER_SUNO_OUT_DIR="$GITHUB_WORKSPACE/out" \
+            xcodebuild test -project LoopPlayer.xcodeproj -scheme LoopPlayer \
+              -destination "id=$UDID" -derivedDataPath uibuild -resultBundlePath "result$attempt.xcresult" \
+              -only-testing:LoopPlayerUITests/SunoSignInUITests \
+              CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="-" \
+              > test.log 2>&1; STATUS=$?
+            grep -E "error:|Test Case|XCTAssert|failed:|Testing failed|never began|TEST (SUCCEEDED|FAILED)" test.log | cut -c1-600 | head -n 60
+            if [ $STATUS -eq 0 ]; then break; fi
+            if ! grep -q "never began executing" test.log; then break; fi
+            echo "Test runner did not start; trying once more"
+          done
+          for f in out/result-*.txt; do echo "===== $f"; cat "$f"; done
+          ls out
+          exit $STATUS
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: suno-signin-results
+          path: |
+            out
+            test.log

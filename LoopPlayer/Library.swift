@@ -356,8 +356,15 @@ final class Library: ObservableObject {
             }
         }
         URLCache.shared.removeAllCachedResponses()
+        // Every site's web data goes except Suno's (and Clerk's, its sign-in service): wiping
+        // those signed the user out of Suno without saying so (fixed in 1.2.3).
         let store = WKWebsiteDataStore.default()
-        await store.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast)
+        let records = await store.dataRecords(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes())
+        let others = records.filter { r in
+            let n = r.displayName.lowercased()
+            return !n.contains("suno") && !n.contains("clerk")
+        }
+        await store.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), for: others)
         ArtworkCache.shared.clear()
         thumbTried = []
         thumbMaking = []

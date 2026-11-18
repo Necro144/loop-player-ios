@@ -1,11 +1,21 @@
 import SwiftUI
 import WebKit
+import Security
 
 // Sign in to Suno with Suno's own sign-in page (suno.com, run by Clerk) inside a web view.
 // Loop Player never sees or keeps the password: the login is typed into Suno's page, and the
 // session stays in the app's web data, like in Safari. For API calls the app asks Suno's page
-// for a short-lived token (window.Clerk.session.getToken(), what suno.com itself does), so the
-// session renews itself the same way the website's does.
+// for a short-lived token, the same way suno.com itself does, so the session renews itself.
+//
+// 1.2.3: suno.com dropped the Clerk script (window.Clerk) in November 2026 and now talks to its
+// sign-in service at auth.suno.com directly: GET /v1/client lists the signed-in sessions and
+// POST /v1/client/sessions/<id>/tokens gives the token. 1.2.2 still waited for window.Clerk,
+// so it never saw a finished sign-in. `sessionJS` below does what the website does.
+//
+// 1.2.3: the session is also kept in the Keychain (SunoSessionVault). WebKit alone lost it:
+// when the app was closed before WebKit wrote its cookies, on TrollStore installs (no sandbox),
+// and after Settings > Clear Cache. On every start the saved cookies are put back into WebKit
+// before Suno's page loads, so the app stays signed in until you tap Sign Out.
 
 @MainActor
 final class SunoAuth: ObservableObject {
@@ -20,49 +30,212 @@ final class SunoAuth: ObservableObject {
     private var loadedAt: Date?
     private var cached: (String, Date)?
 
+    private var restored = false
+    private var savedAt: Date?
+
+    private init() {
+        NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { _ in
+            Task { @MainActor in await SunoAuth.shared.saveSession() }
+        }
+    }
+
     func setUser(_ name: String?) {
         user = name
         UserDefaults.standard.set(name, forKey: "sunoUser")
         cached = nil
         loadedAt = nil
-        if let name { FolderLog.append("Suno: signed in as \(name)") }
+        if let name {
+            FolderLog.append("Suno: signed in as \(name)")
+            // Clerk sets its cookies just before this; give WebKit a moment, then keep them.
+            Task {
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                await self.saveSession(force: true)
+            }
+        }
+    }
+
+    nonisolated private static func isSunoCookie(_ c: HTTPCookie) -> Bool {
+        let d = c.domain.lowercased()
+        return d.contains("suno") || d.contains("clerk")
+    }
+
+    /// Keeps Suno's sign-in cookies in the Keychain (at most once a minute unless forced).
+    func saveSession(force: Bool = false) async {
+        guard signedIn else { return }
+        if !force, let t = savedAt, Date().timeIntervalSince(t) < 60 { return }
+        let all = await WKWebsiteDataStore.default().httpCookieStore.allCookies()
+        let suno = all.filter(SunoAuth.isSunoCookie)
+        // Clerk's "__client" / "__session" cookies prove a session; don't overwrite a good
+        // save with an empty or half one.
+        guard suno.contains(where: { $0.name.hasPrefix("__client") || $0.name.hasPrefix("__session") }) else {
+            if force { FolderLog.append("Suno: no sign-in cookies found to keep (\(suno.count) Suno cookies)") }
+            return
+        }
+        if SunoSessionVault.save(suno) {
+            savedAt = Date()
+            if force { FolderLog.append("Suno: sign-in kept on this phone (\(suno.count) cookies)") }
+        } else {
+            FolderLog.append("Suno: couldn't keep the sign-in on this phone")
+        }
+    }
+
+    /// Puts the kept cookies back into WebKit. Runs once per start (and again with force when
+    /// Suno's page says the session is gone). Newer cookies already in WebKit are kept.
+    func restoreSession(force: Bool = false) async {
+        guard signedIn, force || !restored else { return }
+        restored = true
+        let saved = SunoSessionVault.load()
+        guard !saved.isEmpty else {
+            FolderLog.append("Suno: no kept sign-in to restore")
+            return
+        }
+        let store = WKWebsiteDataStore.default().httpCookieStore
+        let current = await store.allCookies()
+        var put = 0
+        for c in saved {
+            if let exp = c.expiresDate, exp < Date() { continue }
+            let same = current.first { $0.name == c.name && $0.domain == c.domain && $0.path == c.path }
+            if !force, let same, (same.expiresDate ?? .distantFuture) >= (c.expiresDate ?? .distantPast) { continue }
+            await store.setCookie(c)
+            put += 1
+        }
+        if put > 0 {
+            cached = nil
+            loadedAt = nil
+        }
+        FolderLog.append("Suno: restored the kept sign-in (\(put) of \(saved.count) cookies)")
     }
 
     /// A fresh token for Suno's API, or nil when not signed in.
     func token() async -> String? {
         guard signedIn else { return nil }
         if let c = cached, Date().timeIntervalSince(c.1) < 40 { return c.0 }
+        await restoreSession()
         let w = web ?? makeWeb()
         if loadedAt == nil || Date().timeIntervalSince(loadedAt!) > 1800 {
             w.load(URLRequest(url: URL(string: "https://suno.com/")!))
             loadedAt = Date()
         }
-        let js = """
-        if (!window.Clerk || !window.Clerk.loaded) return 'wait';
-        if (!window.Clerk.session) return 'none';
-        return await window.Clerk.session.getToken();
-        """
-        for _ in 0..<40 {
-            if let r = try? await w.callAsyncJavaScript(js, arguments: [:], in: nil, contentWorld: .page) as? String {
+        var retried = false
+        var lastErr = ""
+        for _ in 0..<60 {
+            if let r = try? await w.callAsyncJavaScript(SunoAuth.sessionJS, arguments: ["mode": "token"], in: nil, contentWorld: .page) as? String {
+                if r.hasPrefix("err:") { lastErr = r }
                 if r == "none" {
-                    FolderLog.append("Suno: the sign-in has ended; sign in again in Settings")
+                    if !retried {
+                        // Often only WebKit lost the cookies (or the page loaded before they were
+                        // back): put the kept ones back and load Suno's page again before giving up.
+                        retried = true
+                        FolderLog.append("Suno: page shows no sign-in; restoring the kept one and trying again")
+                        await restoreSession(force: true)
+                        w.load(URLRequest(url: URL(string: "https://suno.com/")!))
+                        loadedAt = Date()
+                        try? await Task.sleep(nanoseconds: 1_000_000_000)
+                        continue
+                    }
+                    FolderLog.append("Suno: Suno ended the sign-in; sign in again in Settings")
                     setUser(nil)
+                    SunoSessionVault.clear()
                     return nil
                 }
-                if r != "wait" && r.count > 20 {
-                    cached = (r, Date())
-                    return r
+                if r.hasPrefix("jwt:") {
+                    let t = String(r.dropFirst(4))
+                    cached = (t, Date())
+                    await saveSession()
+                    return t
                 }
             }
             try? await Task.sleep(nanoseconds: 500_000_000)
         }
-        // Suno's page didn't answer: use its session cookie (it may be a few seconds old).
+        if !lastErr.isEmpty { FolderLog.append("Suno: token from the page failed (\(lastErr.prefix(120)))") }
+        // Ask auth.suno.com from the app itself, with the cookies Suno's page set.
+        if let t = await nativeToken() {
+            cached = (t, Date())
+            return t
+        }
+        // Last resort: Suno's session cookie (it may be a few seconds old).
         let cookies = await WKWebsiteDataStore.default().httpCookieStore.allCookies()
         if let c = cookies.first(where: { $0.name == "__session" && $0.domain.contains("suno") }) {
             cached = (c.value, Date())
             return c.value
         }
         FolderLog.append("Suno: couldn't get a sign-in token from suno.com")
+        return nil
+    }
+
+    /// Runs on a suno.com page (callAsyncJavaScript, argument `mode`): "who" answers
+    /// "user:<name>" or "none"; "token" answers "jwt:<token>" or "none". "wait" while the page
+    /// isn't on suno.com yet, "err:..." when auth.suno.com couldn't be asked.
+    static let sessionJS = """
+    if (!/(^|\\.)suno\\.com$/.test(location.hostname)) return 'wait';
+    let cl;
+    try {
+      const r = await fetch('https://auth.suno.com/v1/client', {credentials: 'include'});
+      if (!r.ok) return 'err:client ' + r.status;
+      cl = (await r.json()).response || {};
+    } catch (e) {
+      if (window.Clerk && window.Clerk.loaded) {
+        if (!window.Clerk.session) return 'none';
+        if (mode === 'who') { const u = window.Clerk.user || {}; return 'user:' + (u.username || u.fullName || 'your account'); }
+        return 'jwt:' + await window.Clerk.session.getToken();
+      }
+      return 'err:client ' + e;
+    }
+    const list = cl.sessions || [];
+    const sid = cl.last_active_session_id || (list[0] && list[0].id);
+    if (!sid) return 'none';
+    if (mode === 'who') {
+      const s = list.find(x => x.id === sid) || list[0] || {};
+      const u = s.user || {};
+      const mails = u.email_addresses || [];
+      const em = mails.find(e => e.id === u.primary_email_address_id) || mails[0];
+      return 'user:' + (u.username || [u.first_name, u.last_name].filter(Boolean).join(' ') || (em && em.email_address) || 'your account');
+    }
+    try {
+      const t = await fetch('https://auth.suno.com/v1/client/sessions/' + encodeURIComponent(sid) + '/tokens', {method: 'POST', credentials: 'include'});
+      if (!t.ok) return 'err:tokens ' + t.status;
+      const j = await t.json();
+      return j.jwt ? 'jwt:' + j.jwt : 'err:no jwt';
+    } catch (e) { return 'err:tokens ' + e; }
+    """
+
+    /// The same two calls as `sessionJS`, made by the app with the cookies WebKit keeps for
+    /// auth.suno.com (used when the hidden page doesn't answer).
+    private func nativeToken() async -> String? {
+        let all = await WKWebsiteDataStore.default().httpCookieStore.allCookies()
+        let auth = all.filter { c in
+            let d = c.domain.hasPrefix(".") ? String(c.domain.dropFirst()) : c.domain
+            return d == "auth.suno.com" || d == "suno.com"
+        }
+        guard !auth.isEmpty else { return nil }
+        let cookie = auth.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
+        func req(_ path: String, post: Bool) -> URLRequest {
+            var r = URLRequest(url: URL(string: "https://auth.suno.com" + path)!)
+            r.httpMethod = post ? "POST" : "GET"
+            r.setValue(cookie, forHTTPHeaderField: "Cookie")
+            r.setValue("https://suno.com", forHTTPHeaderField: "Origin")
+            r.setValue("https://suno.com/", forHTTPHeaderField: "Referer")
+            r.setValue(SunoAuth.safariUA, forHTTPHeaderField: "User-Agent")
+            r.httpShouldHandleCookies = false
+            return r
+        }
+        do {
+            let (d, _) = try await URLSession.shared.data(for: req("/v1/client", post: false))
+            let cl = ((try JSONSerialization.jsonObject(with: d)) as? [String: Any])?["response"] as? [String: Any] ?? [:]
+            let sessions = cl["sessions"] as? [[String: Any]] ?? []
+            guard let sid = (cl["last_active_session_id"] as? String) ?? (sessions.first?["id"] as? String) else {
+                FolderLog.append("Suno: auth.suno.com shows no sign-in (\(auth.count) cookies sent)")
+                return nil
+            }
+            let path = "/v1/client/sessions/\(sid.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? sid)/tokens"
+            let (td, _) = try await URLSession.shared.data(for: req(path, post: true))
+            if let jwt = ((try JSONSerialization.jsonObject(with: td)) as? [String: Any])?["jwt"] as? String, jwt.count > 20 {
+                return jwt
+            }
+            FolderLog.append("Suno: auth.suno.com gave no token")
+        } catch {
+            FolderLog.append("Suno: auth.suno.com didn't answer (\(error.localizedDescription))")
+        }
         return nil
     }
 
@@ -78,7 +251,7 @@ final class SunoAuth: ObservableObject {
 
     func signOut() async {
         if let w = web {
-            _ = try? await w.callAsyncJavaScript("if (window.Clerk && window.Clerk.signOut) { await window.Clerk.signOut(); } return 1;",
+            _ = try? await w.callAsyncJavaScript("try { await fetch('https://auth.suno.com/v1/client', {method: 'DELETE', credentials: 'include'}); } catch (e) {} if (window.Clerk && window.Clerk.signOut) { await window.Clerk.signOut(); } return 1;",
                                                  arguments: [:], in: nil, contentWorld: .page)
         }
         let store = WKWebsiteDataStore.default()
@@ -87,6 +260,7 @@ final class SunoAuth: ObservableObject {
         await store.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), for: suno)
         web?.removeFromSuperview()
         web = nil
+        SunoSessionVault.clear()
         setUser(nil)
         FolderLog.append("Suno: signed out")
     }
@@ -105,6 +279,90 @@ final class SunoAuth: ObservableObject {
         }
         web = w
         return w
+    }
+}
+
+// MARK: - Kept sign-in
+
+/// Suno's sign-in cookies, kept in the Keychain (this phone only, readable after the first
+/// unlock so background playback works). If the Keychain refuses (it can on some TrollStore
+/// installs), a protected file in the app's own data is used instead. Never the password:
+/// Loop Player never sees it.
+enum SunoSessionVault {
+    private static let service = "com.necro144.loopplayer.suno"
+    private static let account = "session"
+    private static var file: URL { AppPaths.support.appendingPathComponent("suno-session.plist") }
+
+    static func save(_ cookies: [HTTPCookie]) -> Bool {
+        let list: [[String: Any]] = cookies.compactMap { c in
+            guard let props = c.properties else { return nil }
+            var d: [String: Any] = [:]
+            for (k, v) in props {
+                switch v {
+                case let x as String: d[k.rawValue] = x
+                case let x as Date: d[k.rawValue] = x
+                case let x as NSNumber: d[k.rawValue] = x
+                case let x as URL: d[k.rawValue] = x.absoluteString
+                default: d[k.rawValue] = "\(v)"
+                }
+            }
+            return d
+        }
+        guard let data = try? PropertyListSerialization.data(fromPropertyList: list, format: .binary, options: 0) else { return false }
+        if keychainWrite(data) {
+            try? FileManager.default.removeItem(at: file)
+            return true
+        }
+        do {
+            try data.write(to: file, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    static func load() -> [HTTPCookie] {
+        guard let data = keychainRead() ?? (try? Data(contentsOf: file)),
+              let list = (try? PropertyListSerialization.propertyList(from: data, options: [], format: nil)) as? [[String: Any]]
+        else { return [] }
+        return list.compactMap { d in
+            var props: [HTTPCookiePropertyKey: Any] = [:]
+            for (k, v) in d { props[HTTPCookiePropertyKey(k)] = v }
+            return HTTPCookie(properties: props)
+        }
+    }
+
+    static func clear() {
+        SecItemDelete(baseQuery as CFDictionary)
+        try? FileManager.default.removeItem(at: file)
+    }
+
+    private static var baseQuery: [String: Any] {
+        [kSecClass as String: kSecClassGenericPassword,
+         kSecAttrService as String: service,
+         kSecAttrAccount as String: account]
+    }
+
+    private static func keychainWrite(_ data: Data) -> Bool {
+        let attrs: [String: Any] = [kSecValueData as String: data,
+                                    kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly]
+        let status = SecItemUpdate(baseQuery as CFDictionary, attrs as CFDictionary)
+        if status == errSecSuccess { return true }
+        if status == errSecItemNotFound {
+            var add = baseQuery
+            add.merge(attrs) { $1 }
+            return SecItemAdd(add as CFDictionary, nil) == errSecSuccess
+        }
+        return false
+    }
+
+    private static func keychainRead() -> Data? {
+        var q = baseQuery
+        q[kSecReturnData as String] = true
+        q[kSecMatchLimit as String] = kSecMatchLimitOne
+        var out: CFTypeRef?
+        guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess else { return nil }
+        return out as? Data
     }
 }
 
@@ -206,6 +464,9 @@ struct SunoSignInWeb: UIViewRepresentable {
         weak var main: WKWebView?
         /// Open pop-up windows (newest last), each with its bar.
         var popups: [(UIView, WKWebView)] = []
+        private var checking = false
+        private var finished = false
+        private var lastCheck = ""
 
         init(onSignedIn: @escaping (String) -> Void) { self.onSignedIn = onSignedIn }
 
@@ -222,14 +483,21 @@ struct SunoSignInWeb: UIViewRepresentable {
             timer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in self?.check() }
         }
 
-        private func check() {
-            let js = "(window.Clerk && window.Clerk.user) ? (window.Clerk.user.username || window.Clerk.user.fullName || (window.Clerk.user.primaryEmailAddress && window.Clerk.user.primaryEmailAddress.emailAddress) || 'your account') : ''"
-            main?.evaluateJavaScript(js) { [weak self] r, _ in
-                guard let self, let name = r as? String, !name.isEmpty else { return }
+        func check() {
+            guard !checking, !finished, let main else { return }
+            checking = true
+            main.callAsyncJavaScript(SunoAuth.sessionJS, arguments: ["mode": "who"], in: nil, in: .page) { [weak self] result in
+                guard let self else { return }
+                self.checking = false
+                guard case .success(let v) = result, let r = v as? String else { return }
+                if r.hasPrefix("err:"), r != self.lastCheck { SunoSignInLog.add("check: \(r.prefix(120))") }
+                self.lastCheck = r
+                guard r.hasPrefix("user:"), !self.finished else { return }
+                self.finished = true
                 self.timer?.invalidate()
                 SunoSignInLog.add("signed in")
                 self.closeAllPopups()
-                self.onSignedIn(name)
+                self.onSignedIn(String(r.dropFirst(5)))
             }
         }
 
@@ -303,6 +571,13 @@ struct SunoSignInWeb: UIViewRepresentable {
                 SunoSignInLog.add((isPopup ? "popup page " : "page ") + (u.host ?? u.absoluteString) + u.path)
             }
             decisionHandler(.allow)
+        }
+
+        // Suno sends you to suno.com/create (or another page) once signing in is done: ask at once.
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            if webView === main, let u = webView.url, (u.host ?? "").hasSuffix("suno.com"), !u.path.hasPrefix("/sign-in") {
+                check()
+            }
         }
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {

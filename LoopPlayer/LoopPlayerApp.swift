@@ -45,6 +45,8 @@ struct LoopPlayerApp: App {
         TestHooks.prepare()
         Watchdog.start()
         FolderLog.append("App started (version \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"))" + (DeviceFolders.available ? ", phone folders readable (TrollStore)" : ""))
+        // Put the kept Suno sign-in back into WebKit before anything loads Suno's page.
+        Task { @MainActor in await SunoAuth.shared.restoreSession() }
         let tab = UITabBarAppearance()
         tab.configureWithOpaqueBackground()
         tab.backgroundColor = UIColor(white: 0.035, alpha: 1)

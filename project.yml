@@ -22,8 +22,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.necro144.loopplayer
         PRODUCT_NAME: LoopPlayer
-        MARKETING_VERSION: "1.2.2"
-        CURRENT_PROJECT_VERSION: "9"
+        MARKETING_VERSION: "1.2.3"
+        CURRENT_PROJECT_VERSION: "10"
         SWIFT_VERSION: "5.0"
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: Loop Player

@@ -32,7 +32,7 @@ final class SunoTabUITests: XCTestCase {
         let out = dir.appendingPathComponent("suno-tab-open.txt")
         try? FileManager.default.removeItem(at: out)
         let app = XCUIApplication()
-        app.launchEnvironment = ["TEST_TAB": "0", "TEST_SUNO_TAB_OUT": out.path]
+        app.launchEnvironment = ["TEST_ADD_DOCUMENTS": "1", "TEST_TAB": "0", "TEST_SUNO_TAB_OUT": out.path]
         app.launch()
         let button = app.buttons["tab-Suno"]
         XCTAssertTrue(button.waitForExistence(timeout: 60), "no Suno tab button")
@@ -61,7 +61,7 @@ final class SunoTabUITests: XCTestCase {
         let out = dir.appendingPathComponent("suno-tab-play.txt")
         try? FileManager.default.removeItem(at: out)
         let app = XCUIApplication()
-        app.launchEnvironment = ["TEST_TAB": "4", "TEST_SUNO_TAB_OUT": out.path,
+        app.launchEnvironment = ["TEST_ADD_DOCUMENTS": "1", "TEST_TAB": "4", "TEST_SUNO_TAB_OUT": out.path,
                                  "TEST_SUNO_TAB_URL": "https://suno.com/song/538ab4ae-3ace-4abf-95f9-be0bed53b65d"]
         app.launch()
         let play = app.webViews.descendants(matching: .any)

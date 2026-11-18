@@ -131,33 +131,77 @@ struct RootView: View {
     }
 }
 
+/// Six tabs (1.3.0 adds Suno). iPhone's own tab bar shows only five before folding the rest
+/// into "More", so the bar is drawn here. Every tab stays alive when hidden, like a TabView.
 struct MainTabs: View {
     @AppStorage("tab") private var tab = 0
 
+    private static let items: [(String, String)] = [
+        ("Home", "house.fill"), ("Library", "square.stack.fill"), ("Search", "magnifyingglass"),
+        ("Playlists", "music.note.list"), ("Suno", "waveform"), ("Settings", "gearshape.fill")
+    ]
+    /// Old saved tab numbers: Settings was 4 before the Suno tab.
+    private static let sunoTab = 4, settingsTab = 5
+
     var body: some View {
-        TabView(selection: $tab) {
-            NavigationStack { HomeView() }
-                .withMiniPlayer()
-                .tabItem { Label("Home", systemImage: "house.fill") }
-                .tag(0)
-            NavigationStack { LibraryView() }
-                .withMiniPlayer()
-                .tabItem { Label("Library", systemImage: "square.stack.fill") }
-                .tag(1)
-            NavigationStack { SearchView() }
-                .withMiniPlayer()
-                .tabItem { Label("Search", systemImage: "magnifyingglass") }
-                .tag(2)
-            NavigationStack { PlaylistsView() }
-                .withMiniPlayer()
-                .tabItem { Label("Playlists", systemImage: "music.note.list") }
-                .tag(3)
-            NavigationStack { SettingsView() }
-                .withMiniPlayer()
-                .tabItem { Label("Settings", systemImage: "gearshape.fill") }
-                .tag(4)
+        VStack(spacing: 0) {
+            ZStack {
+                page(0) { NavigationStack { HomeView() }.withMiniPlayer() }
+                page(1) { NavigationStack { LibraryView() }.withMiniPlayer() }
+                page(2) { NavigationStack { SearchView() }.withMiniPlayer() }
+                page(3) { NavigationStack { PlaylistsView() }.withMiniPlayer() }
+                page(MainTabs.sunoTab) { SunoTabView(active: tab == MainTabs.sunoTab).withMiniPlayer() }
+                page(MainTabs.settingsTab) { NavigationStack { SettingsView() }.withMiniPlayer() }
+            }
+            bar
+        }
+        .ignoresSafeArea(.keyboard, edges: .bottom)
+        .onAppear {
+            if UserDefaults.standard.object(forKey: "tabsV13") == nil {
+                UserDefaults.standard.set(true, forKey: "tabsV13")
+                if tab == 4 { tab = MainTabs.settingsTab }
+            }
+            if tab < 0 || tab >= MainTabs.items.count { tab = 0 }
         }
     }
+
+    private func page<V: View>(_ i: Int, @ViewBuilder _ content: () -> V) -> some View {
+        content()
+            .opacity(tab == i ? 1 : 0)
+            .allowsHitTesting(tab == i)
+            .accessibilityHidden(tab != i)
+            .zIndex(tab == i ? 1 : 0)
+    }
+
+    private var bar: some View {
+        HStack(spacing: 0) {
+            ForEach(Array(MainTabs.items.enumerated()), id: \.offset) { i, item in
+                Button {
+                    if tab == i, i != MainTabs.sunoTab { NotificationCenter.default.post(name: .tabReselected, object: i) }
+                    tab = i
+                } label: {
+                    VStack(spacing: 3) {
+                        Image(systemName: item.1).font(.system(size: 19, weight: .semibold)).frame(height: 24)
+                        Text(item.0).font(.system(size: 10, weight: .medium)).lineLimit(1).minimumScaleFactor(0.8)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 7)
+                    .padding(.bottom, 2)
+                    .foregroundColor(tab == i ? Theme.accent : Color.white.opacity(0.5))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("tab-\(item.0)")
+                .accessibilityAddTraits(tab == i ? [.isSelected] : [])
+            }
+        }
+        .background(Color(white: 0.035).ignoresSafeArea(edges: .bottom))
+        .overlay(alignment: .top) { Rectangle().fill(Theme.hairline).frame(height: 0.5) }
+    }
+}
+
+extension Notification.Name {
+    static let tabReselected = Notification.Name("LoopPlayer.tabReselected")
 }
 
 extension View {
@@ -227,6 +271,7 @@ enum TestHooks {
         let env = ProcessInfo.processInfo.environment
         if let tab = env["TEST_TAB"], let n = Int(tab) {
             UserDefaults.standard.set(n, forKey: "tab")
+            UserDefaults.standard.set(true, forKey: "tabsV13")
         }
         if env["TEST_ADD_DOCUMENTS"] == "1", Library.shared.folders.isEmpty {
             let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]

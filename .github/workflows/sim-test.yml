@@ -78,7 +78,7 @@ jobs:
           # 4. the other tabs (the library comes back from the cache)
           launch SIMCTL_CHILD_TEST_TAB=1; sleep 4; shoot 5-library
           launch SIMCTL_CHILD_TEST_TAB=3; sleep 4; shoot 6-playlists
-          launch SIMCTL_CHILD_TEST_TAB=4; sleep 4; shoot 7-settings
+          launch SIMCTL_CHILD_TEST_TAB=5; sleep 4; shoot 7-settings
           ls -l shots
 
       - name: Video pictures, background play, YouTube, Spotify and Suno

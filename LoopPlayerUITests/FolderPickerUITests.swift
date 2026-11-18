@@ -166,7 +166,7 @@ final class FolderPickerUITests: XCTestCase {
             waitForExpectations(timeout: 300)
             shot(app, tag + "-scanned")
         }
-        app.tabBars.buttons["Settings"].tap()
+        app.buttons["tab-Settings"].tap()
         let logLink = app.buttons["Folder Log"]
         for _ in 0..<4 where !logLink.isHittable { app.swipeUp() }
         if logLink.isHittable {
@@ -178,7 +178,7 @@ final class FolderPickerUITests: XCTestCase {
         app.terminate()
         let again = XCUIApplication()
         again.launch()
-        let home = again.tabBars.buttons["Home"]
+        let home = again.buttons["tab-Home"]
         if home.waitForExistence(timeout: 60) { home.tap() }
         XCTAssertTrue(again.buttons["Shuffle All"].waitForExistence(timeout: 60), "The folder was forgotten after relaunch")
         XCTAssertTrue(anything(again, bigLibrary ? "Clip Video" : "Night Drive").waitForExistence(timeout: 40), "Songs missing after relaunch")

@@ -18,12 +18,13 @@ targets:
         UIBackgroundModes: [audio]
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
+        NSMicrophoneUsageDescription: "The Suno tab can use the microphone when you record a song idea on Suno."
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.necro144.loopplayer
         PRODUCT_NAME: LoopPlayer
-        MARKETING_VERSION: "1.2.3"
-        CURRENT_PROJECT_VERSION: "10"
+        MARKETING_VERSION: "1.3.0"
+        CURRENT_PROJECT_VERSION: "11"
         SWIFT_VERSION: "5.0"
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: Loop Player

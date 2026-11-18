@@ -103,7 +103,7 @@ final class SunoAuth: ObservableObject {
             cached = nil
             loadedAt = nil
         }
-        FolderLog.append("Suno: restored the kept sign-in (\(put) of \(saved.count) cookies)")
+        FolderLog.append(put == 0 ? "Suno: sign-in already in place (\(saved.count) kept cookies)" : "Suno: restored the kept sign-in (\(put) of \(saved.count) cookies)")
     }
 
     /// A fresh token for Suno's API, or nil when not signed in.
@@ -400,7 +400,7 @@ struct SunoSignInView: View {
                     done = name
                     auth.setUser(name)
                     Task {
-                        try? await Task.sleep(nanoseconds: 1_200_000_000)
+                        try? await Task.sleep(nanoseconds: 600_000_000)
                         dismiss()
                     }
                 }
@@ -566,6 +566,11 @@ struct SunoSignInWeb: UIViewRepresentable {
 
         func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                      decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+            // Already signed in: don't go on into Google/Apple/Discord again while the screen closes.
+            if finished, navigationAction.targetFrame?.isMainFrame != false {
+                decisionHandler(.cancel)
+                return
+            }
             if navigationAction.targetFrame?.isMainFrame != false, let u = navigationAction.request.url {
                 let isPopup = webView !== main
                 SunoSignInLog.add((isPopup ? "popup page " : "page ") + (u.host ?? u.absoluteString) + u.path)

@@ -457,8 +457,17 @@ final class Player: ObservableObject {
             var options: [String: Any] = [:]
             if track.folderID == SunoStore.folderID {
                 // Suno: songs added while signed in get a fresh link and the sign-in.
-                if let p = await SunoStore.shared.prepare(track) { playURL = p.0; options = p.1 }
+                let p = await SunoStore.shared.prepare(track)
                 guard token == self.loadToken else { return }
+                if let p { playURL = p.0; options = p.1 } else if SunoAuth.shared.signedIn {
+                    // Suno has no file iOS 16 can play by itself (its own audio is Opus): play it in
+                    // the Suno tab, which decodes it like Suno Legacy.
+                    let clip = ((track.relativePath as NSString).lastPathComponent as NSString).deletingPathExtension
+                    self.halt()
+                    self.toast = "Playing in the Suno tab"
+                    SunoWebModel.shared.playSong(clip)
+                    return
+                }
             }
             let item = AVPlayerItem(asset: AVURLAsset(url: playURL, options: options))
             item.audioTimePitchAlgorithm = self.pitchAlgorithm

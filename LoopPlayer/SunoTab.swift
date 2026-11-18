@@ -35,8 +35,7 @@ final class SunoWebModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     private static func test(_ s: String) {
         guard let out = ProcessInfo.processInfo.environment["TEST_SUNO_TAB_OUT"] else { return }
         testLines.append(s)
-        try? testLines.joined(separator: "
-").write(toFile: out, atomically: true, encoding: .utf8)
+        try? testLines.joined(separator: "\n").write(toFile: out, atomically: true, encoding: .utf8)
     }
     private var testTimer: Timer?
 
@@ -112,6 +111,38 @@ final class SunoWebModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         Task {
             await SunoAuth.shared.restoreSession()
             home()
+        }
+    }
+
+    private var autoplayClip: String?
+
+    /// Opens a song in the Suno tab and starts it (used when Loop Player's own player can't play it).
+    func playSong(_ clip: String) {
+        started = true
+        failed = false
+        popup = nil
+        autoplayClip = clip
+        SunoWebModel.log("playing \(clip) here")
+        UserDefaults.standard.set(4, forKey: "tab")
+        webView.load(URLRequest(url: URL(string: "https://suno.com/song/\(clip)")!))
+    }
+
+    /// Taps the song page's own Play button (tries for a few seconds while the page builds).
+    private func autoplay() {
+        let js = """
+        var b = document.querySelector('button[aria-label="Play"], button[aria-label="Play song"]');
+        if (b) { b.click(); return 'clicked'; }
+        return 'none';
+        """
+        Task {
+            for _ in 0..<12 {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                if pagePlaying { break }
+                if let r = try? await webView.callAsyncJavaScript(js, arguments: [:], in: nil, contentWorld: .page) as? String, r == "clicked" {
+                    SunoWebModel.log("pressed Play on the song page")
+                    break
+                }
+            }
         }
     }
 
@@ -251,6 +282,10 @@ final class SunoWebModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         failed = false
         webView.scrollView.refreshControl?.endRefreshing()
         SunoWebModel.test("page \(webView.url?.host ?? "?")\(webView.url?.path ?? "")")
+        if let clip = autoplayClip, webView.url?.path.contains(clip) == true {
+            autoplayClip = nil
+            autoplay()
+        }
         if isSunoPage(webView.url) {
             if signingIn { signingIn = false; SunoWebModel.log("back on Suno after signing in") }
             syncSignIn()

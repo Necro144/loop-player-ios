@@ -508,6 +508,14 @@ private struct SunoPopupSheet: View {
     }
 }
 
+/// Rounded on the left only, flat against the screen edge (iOS 16 has no UnevenRoundedRectangle).
+private struct UnevenRoundedCorners: Shape {
+    func path(in r: CGRect) -> Path {
+        Path(UIBezierPath(roundedRect: r, byRoundingCorners: [.topLeft, .bottomLeft],
+                          cornerRadii: CGSize(width: 12, height: 12)).cgPath)
+    }
+}
+
 struct SunoTabView: View {
     @ObservedObject private var model = SunoWebModel.shared
     let active: Bool
@@ -535,33 +543,39 @@ struct SunoTabView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Theme.bg)
             }
+            if let note = model.note {
+                VStack {
+                    Spacer()
+                    Text(note)
+                        .font(.footnote)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .background(Theme.surface2, in: Capsule())
+                        .padding(.bottom, 90)
+                }
+                .allowsHitTesting(false)
+            }
+            // A small handle on the right edge, halfway down: Suno's own page has buttons in every
+            // corner (its menu, Log in, and its bottom bar with its own ··· button).
             VStack {
                 Spacer()
                 HStack {
-                    if let note = model.note {
-                        Text(note)
-                            .font(.footnote)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 10)
-                            .background(Theme.surface2, in: Capsule())
-                    }
                     Spacer()
                     Menu {
                         Button { model.openCopiedLink() } label: { Label("Open Copied Suno Link", systemImage: "link") }
                         Button { model.home() } label: { Label("Suno Home", systemImage: "house") }
                         Button { model.reload() } label: { Label("Reload", systemImage: "arrow.clockwise") }
                     } label: {
-                        Image(systemName: "ellipsis")
-                            .font(.system(size: 16, weight: .bold))
+                        Image(systemName: "link")
+                            .font(.system(size: 14, weight: .bold))
                             .foregroundColor(.white)
-                            .frame(width: 40, height: 40)
-                            .background(Theme.surface2.opacity(0.92), in: Circle())
-                            .overlay(Circle().stroke(Theme.hairline))
+                            .frame(width: 30, height: 44)
+                            .background(Theme.surface2.opacity(0.85),
+                                        in: UnevenRoundedCorners())
                     }
                     .accessibilityLabel("Suno tab options")
                 }
-                .padding(.horizontal, 12)
-                .padding(.bottom, 10)
+                Spacer()
             }
         }
         .background(Theme.bg.ignoresSafeArea())

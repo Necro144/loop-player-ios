@@ -16,6 +16,7 @@ targets:
       path: LoopPlayer/Info.plist
       properties:
         UIBackgroundModes: [audio]
+        LSApplicationQueriesSchemes: [instagram-stories, instagram, snapchat]
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
         NSPhotoLibraryAddUsageDescription: "Loop Player saves the clips you share to Photos when you choose Save Video."
@@ -24,8 +25,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.necro144.loopplayer
         PRODUCT_NAME: LoopPlayer
-        MARKETING_VERSION: "1.4.0"
-        CURRENT_PROJECT_VERSION: "12"
+        MARKETING_VERSION: "1.4.1"
+        CURRENT_PROJECT_VERSION: "13"
         SWIFT_VERSION: "5.0"
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: Loop Player

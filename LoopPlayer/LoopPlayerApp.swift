@@ -300,6 +300,10 @@ enum TestHooks {
                 }
                 if let secs = env["TEST_CLIP"].flatMap(Double.init) {
                     // Share a Clip: cut `secs` seconds from where the video is after a few seconds.
+                    if let r = env["TEST_RATE"].flatMap(Float.init) {
+                        Player.shared.setKeepPitch(env["TEST_KEEP_PITCH"] != "0")
+                        Player.shared.setRate(r)
+                    }
                     try? await Task.sleep(nanoseconds: 5_000_000_000)
                     ClipMaker.shared.make(seconds: secs)
                 }

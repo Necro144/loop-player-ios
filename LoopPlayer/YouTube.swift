@@ -1,11 +1,11 @@
 import SwiftUI
 import WebKit
+import MediaPlayer
 
 // YouTube playlists and single videos play through YouTube's own embedded player (the IFrame
-// Player API), which is the way YouTube allows other apps to play its videos. YouTube's rules for
-// that player: the video stays visible, nothing is downloaded or played as audio only, nothing
-// plays in the background, and its ads are not touched. So playback stops when the app leaves
-// the screen. Videos whose owners turned off embedding are skipped. An optional YouTube Data API
+// Player API). Nothing is downloaded and its ads are not touched. 1.4.1 (the owner asked for it):
+// it keeps playing in the background and with the screen locked, and shows in Control Center and
+// on the lock screen like any song. Videos whose owners turned off embedding are skipped. An optional YouTube Data API
 // key (Settings) only reads the full list of a playlist; no account is used.
 
 struct YTVideo: Codable, Hashable, Identifiable {
@@ -397,7 +397,7 @@ enum YTLoop: Int { case off, all, one }
 /// basic call (loadVideoById). 1.1.1 used YouTube's playlist mode (playVideoAt / playVideo on a
 /// cued playlist), which on the phone answered "error 2" and did nothing.
 @MainActor
-final class YTController: ObservableObject {
+final class YTController: ObservableObject, RemoteControllable {
     weak var webView: WKWebView?
     @Published var stage = "Connecting to YouTube…"
     @Published var apiLoaded = false
@@ -417,6 +417,12 @@ final class YTController: ObservableObject {
     var refusedInARow = 0
     /// Last events, shown in the ··· menu (Player Log) to find out what YouTube answered.
     @Published var log: [String] = []
+    /// The listener wants it playing (set by play buttons, cleared by pause). When iOS or WebKit
+    /// pauses it on leaving the app or locking the screen, it is started again.
+    var wantPlaying = false
+    /// Video titles for the lock screen.
+    var titles: [String: String] = [:]
+    private var art: (String, MPMediaItemArtwork)?
 
     /// Events, kept for the automatic simulator test.
     static var testLog: [String] = []
@@ -452,6 +458,7 @@ final class YTController: ObservableObject {
         let id = queue[i]
         currentID = id
         message = nil
+        wantPlaying = true
         note("load \(id)")
         js("loadVid('\(id)')")
     }
@@ -464,11 +471,93 @@ final class YTController: ObservableObject {
         if currentID.isEmpty || !ready {
             playIndex(index)
         } else {
+            wantPlaying = true
             js("player&&player.playVideo()")
         }
     }
 
-    func pause() { js("player&&player.pauseVideo()") }
+    func pause() {
+        wantPlaying = false
+        js("player&&player.pauseVideo()")
+    }
+
+    // MARK: Background, lock screen and Control Center
+
+    /// The player's state changed (playing, paused, buffering, new video).
+    func stateChanged(_ state: Int) {
+        if playing {
+            Player.shared.startSoundForOtherPlayer()
+            if Player.shared.remoteOverride !== self {
+                Player.shared.remoteOverride = self
+                note("lock screen: YouTube")
+            }
+        }
+        // Paused by iOS, not by the listener (leaving the app, locking the screen): go on.
+        if state == 2, wantPlaying, UIApplication.shared.applicationState != .active {
+            note("paused in the background; playing on")
+            resumeSoon()
+        }
+        refreshNowPlaying()
+    }
+
+    /// The app went to the background or the screen locked.
+    func wentToBackground() {
+        guard wantPlaying else { return }
+        resumeSoon()
+    }
+
+    private func resumeSoon() {
+        Task {
+            for delay in [400_000_000, 1_500_000_000] as [UInt64] {
+                try? await Task.sleep(nanoseconds: delay)
+                guard wantPlaying else { return }
+                if !playing { js("player&&player.playVideo()") }
+            }
+        }
+    }
+
+    /// Fills in the lock screen and Control Center: title, picture, time.
+    func refreshNowPlaying() {
+        guard Player.shared.remoteOverride === self, !currentID.isEmpty else { return }
+        let id = currentID
+        let title = titles[id].flatMap { $0.isEmpty ? nil : $0 } ?? "YouTube video"
+        webView?.evaluateJavaScript("player&&player.getCurrentTime?[player.getCurrentTime(),player.getDuration()]:[0,0]") { [weak self] r, _ in
+            Task { @MainActor in
+                guard let self, Player.shared.remoteOverride === self, self.currentID == id else { return }
+                let t = (r as? [NSNumber])?.map(\.doubleValue) ?? [0, 0]
+                var info: [String: Any] = [
+                    MPMediaItemPropertyTitle: title,
+                    MPMediaItemPropertyArtist: "YouTube",
+                    MPMediaItemPropertyPlaybackDuration: t.count > 1 ? t[1] : 0,
+                    MPNowPlayingInfoPropertyElapsedPlaybackTime: t.first ?? 0,
+                    MPNowPlayingInfoPropertyPlaybackRate: self.playing ? 1.0 : 0.0,
+                    MPNowPlayingInfoPropertyDefaultPlaybackRate: 1.0,
+                    MPNowPlayingInfoPropertyMediaType: NSNumber(value: MPNowPlayingInfoMediaType.audio.rawValue),
+                ]
+                if let a = self.art, a.0 == id { info[MPMediaItemPropertyArtwork] = a.1 }
+                MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+                if self.art?.0 != id { self.loadArt(id) }
+            }
+        }
+    }
+
+    private func loadArt(_ id: String) {
+        guard let url = URL(string: "https://i.ytimg.com/vi/\(id)/hqdefault.jpg") else { return }
+        Task {
+            guard let (d, _) = try? await URLSession.shared.data(from: url), let img = UIImage(data: d) else { return }
+            self.art = (id, NowPlayingArt.make(img))
+            self.refreshNowPlaying()
+        }
+    }
+
+    /// Leaving the YouTube screen: give the lock screen back.
+    func release() {
+        if Player.shared.remoteOverride === self {
+            Player.shared.remoteOverride = nil
+            MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        }
+    }
+
 
     func next(auto: Bool = false) {
         guard !queue.isEmpty else { return }
@@ -497,6 +586,19 @@ final class YTController: ObservableObject {
     }
 
     func setLoop(_ mode: YTLoop) { loop = mode }
+
+    func remotePlay() { play() }
+    func remotePause() { pause() }
+    func remoteToggle() { playing ? pause() : play() }
+    func remoteNext() { next() }
+    func remotePrevious() { previous() }
+    func remoteSeek(_ seconds: Double) {
+        js("player&&player.seekTo(\(seconds),true)")
+        Task {
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            refreshNowPlaying()
+        }
+    }
 
     /// A video finished.
     func ended() {
@@ -593,20 +695,27 @@ struct YouTubePlaylistView: View {
             if p?.isSingle == true { ctl.loop = .one }
             ctl.autoplay = ProcessInfo.processInfo.environment["TEST_YT_PLAY"] == "1"
             ctl.setList(p?.videos.map(\.id) ?? [])
+            ctl.titles = Dictionary((p?.videos ?? []).map { ($0.id, $0.title) }, uniquingKeysWith: { a, _ in a })
             ctl.watchdog()
             yt.loadList(playlistID)
         }
-        .onChange(of: p?.videos.map(\.id) ?? []) { ids in ctl.setList(ids) }
+        .onChange(of: p?.videos.map(\.id) ?? []) { ids in
+            ctl.setList(ids)
+            ctl.titles = Dictionary((p?.videos ?? []).map { ($0.id, $0.title) }, uniquingKeysWith: { a, _ in a })
+        }
         .onChange(of: ctl.playing) { on in
             // One thing plays at a time.
             if on && player.isPlaying { player.pause() }
         }
         .onChange(of: player.isPlaying) { on in if on && ctl.playing { ctl.pause() } }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
-            // YouTube's rules: no background playback.
-            ctl.pause()
+            // Keeps playing in the background and with the screen locked (1.4.1).
+            ctl.wentToBackground()
         }
-        .onDisappear { ctl.pause() }
+        .onDisappear {
+            ctl.pause()
+            ctl.release()
+        }
     }
 
     private func controls(_ p: YTPlaylist) -> some View {
@@ -691,7 +800,7 @@ struct YouTubePlaylistView: View {
     }
 
     private func footer(_ p: YTPlaylist) -> String {
-        var s = "Plays in YouTube's own player. YouTube only lets other apps play its videos on screen: no background play, no locked screen, no downloads, ads as usual. That is YouTube's rule for every app that isn't YouTube or YouTube Premium, so it stops when you leave Loop Player."
+        var s = "Plays in YouTube's own player, ads as usual. It keeps playing in the background and with the screen locked, and shows in Control Center. It stops when you leave this screen."
         if !p.isSingle && p.complete != true {
             s += "\n\nWithout a YouTube API key, YouTube gives other apps at most 200 videos of a playlist. To load all of them, add a free key in Settings > YouTube."
         }
@@ -732,6 +841,24 @@ struct YTPlayerWeb: UIViewRepresentable {
     let ctl: YTController
     let onList: ([String]) -> Void
 
+    /// Runs in the page and in YouTube's player frame: the page always says it's on screen, so the
+    /// player doesn't pause itself when the app goes to the background or the screen locks.
+    static let stayVisible = """
+    (function(){
+      try {
+        Object.defineProperty(document, 'hidden', {get: function(){ return false; }, configurable: true});
+        Object.defineProperty(document, 'webkitHidden', {get: function(){ return false; }, configurable: true});
+        Object.defineProperty(document, 'visibilityState', {get: function(){ return 'visible'; }, configurable: true});
+        Object.defineProperty(document, 'webkitVisibilityState', {get: function(){ return 'visible'; }, configurable: true});
+      } catch (e) {}
+      var stop = function(e){ e.stopImmediatePropagation(); };
+      document.addEventListener('visibilitychange', stop, true);
+      document.addEventListener('webkitvisibilitychange', stop, true);
+      window.addEventListener('pagehide', stop, true);
+      window.addEventListener('blur', stop, true);
+    })();
+    """
+
     // The page needs a real https address: YouTube's embed refuses pages without one (error 152/153).
     static let origin = "https://necro144.com"
 
@@ -743,6 +870,7 @@ struct YTPlayerWeb: UIViewRepresentable {
         config.allowsPictureInPictureMediaPlayback = false
         config.mediaTypesRequiringUserActionForPlayback = []
         config.userContentController.add(WeakHandler(context.coordinator), name: "yt")
+        config.userContentController.addUserScript(WKUserScript(source: YTPlayerWeb.stayVisible, injectionTime: .atDocumentStart, forMainFrameOnly: false))
         let web = WKWebView(frame: .zero, configuration: config)
         web.isOpaque = false
         web.backgroundColor = .black
@@ -806,6 +934,7 @@ struct YTPlayerWeb: UIViewRepresentable {
                 case "state":
                     ctl.playing = state == 1 || state == 3
                     if !vid.isEmpty && YTController.validID(vid) && state != -1 { ctl.currentID = vid }
+                    ctl.stateChanged(state)
                     if state == 1 { ctl.message = nil; ctl.refusedInARow = 0 }
                     if state == 0 { ctl.ended() }
                 case "list":

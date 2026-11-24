@@ -118,6 +118,9 @@ jobs:
           sleep 3; shoot 13b-clip-share-sheet
           launch SIMCTL_CHILD_TEST_PLAY=1 SIMCTL_CHILD_TEST_PLAY_TITLE="Long Song Video" SIMCTL_CHILD_TEST_FULL=1                  SIMCTL_CHILD_TEST_CLIP=60 SIMCTL_CHILD_TEST_CLIP_OUT="$GITHUB_WORKSPACE/out/clip60.txt"
           waitfor out/clip60.txt
+          # 8c. a slowed clip: 0.8x with the pitch following the speed, still 10 s long (8 s of video)
+          launch SIMCTL_CHILD_TEST_PLAY=1 SIMCTL_CHILD_TEST_PLAY_TITLE="Long Song Video" SIMCTL_CHILD_TEST_FULL=1                  SIMCTL_CHILD_TEST_RATE=0.8 SIMCTL_CHILD_TEST_KEEP_PITCH=0 SIMCTL_CHILD_TEST_CLIP=10 SIMCTL_CHILD_TEST_CLIP_OUT="$GITHUB_WORKSPACE/out/clipslow.txt"
+          waitfor out/clipslow.txt
           # 9. Suno: stream a public song, go to another app, keep playing; then a playlist
           launch SIMCTL_CHILD_TEST_TAB=0 SIMCTL_CHILD_TEST_SUNO="https://suno.com/song/538ab4ae-3ace-4abf-95f9-be0bed53b65d"                  SIMCTL_CHILD_TEST_SUNO_WAIT=40 SIMCTL_CHILD_TEST_SUNO_OUT="$GITHUB_WORKSPACE/out/suno.txt"
           sleep 14; shoot 14-suno-playing
@@ -155,6 +158,8 @@ jobs:
           check "^seconds=(59\.[5-9]|60\.[0-5])$" out/clip60.txt "1 minute clip made"
           check "^video=640x360$" out/clip10.txt "clip has the picture"
           check "^audio=true$" out/clip10.txt "clip has the sound"
+          check "^seconds=(9\.[5-9]|10\.[0-5])$" out/clipslow.txt "slowed clip is 10 s (made from 8 s at 0.8x)"
+          check "^audio=true$" out/clipslow.txt "slowed clip has the sound"
           T=$(grep "^time=" out/bg.txt | cut -d= -f2); if [ "${T:-0}" -ge 35 ]; then echo "ok   background time $T s"; else echo "FAIL background time ${T:-?} s"; fail=1; fi
           cat out/play.txt
           grep -q "^tracks=6$" out/play.txt

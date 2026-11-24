@@ -26,7 +26,13 @@ final class Player: ObservableObject {
 
     @Published private(set) var queue: [Track] = []
     @Published private(set) var index = 0
-    @Published private(set) var isPlaying = false
+    @Published private(set) var isPlaying = false {
+        // Loop Player's own player plays again: it takes the lock screen back from YouTube.
+        didSet { if isPlaying, remoteOverride != nil { remoteOverride = nil; updateNowPlaying() } }
+    }
+    /// While set (the YouTube player is playing), the lock screen and Control Center buttons go
+    /// there, and it fills in what they show.
+    weak var remoteOverride: RemoteControllable?
     @Published private(set) var isPreparing = false
     @Published private(set) var repeatMode: RepeatMode = .off
     @Published private(set) var shuffle = false
@@ -796,6 +802,13 @@ final class Player: ObservableObject {
         }
     }
 
+    /// For the YouTube player: sound that plays with the silent switch on, in the background
+    /// and with the screen locked.
+    func startSoundForOtherPlayer() {
+        configureSession()
+        activateSession()
+    }
+
     private func activateSession() {
         do {
             try AVAudioSession.sharedInstance().setActive(true)
@@ -809,29 +822,29 @@ final class Player: ObservableObject {
     private func setupRemoteCommands() {
         let c = MPRemoteCommandCenter.shared()
         c.playCommand.addTarget { [weak self] _ in
-            Task { @MainActor in self?.resume() }
+            Task { @MainActor in if let o = self?.remoteOverride { o.remotePlay() } else { self?.resume() } }
             return .success
         }
         c.pauseCommand.addTarget { [weak self] _ in
-            Task { @MainActor in self?.pause() }
+            Task { @MainActor in if let o = self?.remoteOverride { o.remotePause() } else { self?.pause() } }
             return .success
         }
         c.togglePlayPauseCommand.addTarget { [weak self] _ in
-            Task { @MainActor in self?.togglePlay() }
+            Task { @MainActor in if let o = self?.remoteOverride { o.remoteToggle() } else { self?.togglePlay() } }
             return .success
         }
         c.nextTrackCommand.addTarget { [weak self] _ in
-            Task { @MainActor in self?.next() }
+            Task { @MainActor in if let o = self?.remoteOverride { o.remoteNext() } else { self?.next() } }
             return .success
         }
         c.previousTrackCommand.addTarget { [weak self] _ in
-            Task { @MainActor in self?.previous() }
+            Task { @MainActor in if let o = self?.remoteOverride { o.remotePrevious() } else { self?.previous() } }
             return .success
         }
         c.changePlaybackPositionCommand.addTarget { [weak self] e in
             guard let e = e as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
             let t = e.positionTime
-            Task { @MainActor in self?.seek(to: t) }
+            Task { @MainActor in if let o = self?.remoteOverride { o.remoteSeek(t) } else { self?.seek(to: t) } }
             return .success
         }
         c.changeRepeatModeCommand.addTarget { [weak self] e in
@@ -876,6 +889,7 @@ final class Player: ObservableObject {
     }
 
     private func updateNowPlaying() {
+        guard remoteOverride == nil else { return }
         guard let t = current else {
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
             return
@@ -908,6 +922,7 @@ final class Player: ObservableObject {
     }
 
     private func updateNowPlayingTime() {
+        guard remoteOverride == nil else { return }
         guard var info = MPNowPlayingInfoCenter.default().nowPlayingInfo else { updateNowPlaying(); return }
         info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = clock.time
         info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? Double(rate) : 0.0
@@ -1020,4 +1035,15 @@ enum FileAccess {
             if !isCurrent(url) { _ = ensureLocalSync(url) }
         }
     }
+}
+
+/// Another player (YouTube) that takes the lock screen and Control Center buttons.
+@MainActor
+protocol RemoteControllable: AnyObject {
+    func remotePlay()
+    func remotePause()
+    func remoteToggle()
+    func remoteNext()
+    func remotePrevious()
+    func remoteSeek(_ seconds: Double)
 }

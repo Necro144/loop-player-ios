@@ -270,6 +270,21 @@ final class SunoWebModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         }
     }
 
+    /// Back on Suno after signing in (as in Suno Legacy): keep the sign-in at once, and if the
+    /// page still shows "Log in" (it loaded before the sign-in cookies were in place), reload once.
+    private func cameBackFromSignIn() {
+        SunoWebModel.log("back on Suno after signing in")
+        Task {
+            await SunoAuth.shared.saveSession(force: true)
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            let check = "[].slice.call(document.querySelectorAll('button,a')).some(function(e){var t=(e.innerText||'').trim().toLowerCase();return t==='log in'||t==='sign in'||t==='sign up'})"
+            if let r = try? await webView.evaluateJavaScript(check) as? Bool, r {
+                SunoWebModel.log("page still says Log in; reloading once")
+                webView.reload()
+            }
+        }
+    }
+
     // MARK: Pages
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
@@ -287,7 +302,7 @@ final class SunoWebModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
             autoplay()
         }
         if isSunoPage(webView.url) {
-            if signingIn { signingIn = false; SunoWebModel.log("back on Suno after signing in") }
+            if signingIn { signingIn = false; cameBackFromSignIn() }
             syncSignIn()
         }
     }
@@ -304,7 +319,7 @@ final class SunoWebModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
                 popup = nil
                 Task {
                     try? await Task.sleep(nanoseconds: 500_000_000)
-                    self.signingIn = false
+                    self.signingIn = true   // the page that loads now finishes the sign-in
                     self.webView.load(URLRequest(url: url))
                 }
                 return

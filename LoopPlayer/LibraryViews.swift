@@ -837,6 +837,7 @@ struct SettingsView: View {
     @State private var cacheResult: String?
     @State private var clearing = false
     @State private var ytKey = UserDefaults.standard.string(forKey: "ytApiKey") ?? ""
+    @State private var igAppID = UserDefaults.standard.string(forKey: "igAppID") ?? ""
     @State private var lockReport: [String]?
     @ObservedObject private var suno = SunoAuth.shared
     @State private var sunoSignIn = false
@@ -975,7 +976,19 @@ struct SettingsView: View {
             } header: {
                 Text("YouTube")
             } footer: {
-                Text("Without a key, YouTube gives other apps at most 200 videos of a playlist. With your own free key, Loop Player loads all of them. To get one: console.cloud.google.com > create a project > APIs & Services > Library > enable \"YouTube Data API v3\" > Credentials > Create credentials > API key. Paste it here, then open the playlist and choose Reload the List.\n\nYouTube videos play only while Loop Player is on screen: YouTube does not allow other apps to play its videos in the background or on the lock screen.")
+                Text("Without a key, YouTube gives other apps at most 200 videos of a playlist. With your own free key, Loop Player loads all of them. To get one: console.cloud.google.com > create a project > APIs & Services > Library > enable \"YouTube Data API v3\" > Credentials > Create credentials > API key. Paste it here, then open the playlist and choose Reload the List.\n\nYouTube videos keep playing in the background and with the screen locked, and show in Control Center.")
+            }
+
+            Section {
+                TextField("Facebook App ID (for Instagram Stories)", text: $igAppID)
+                    .keyboardType(.numberPad)
+                    .onChange(of: igAppID) { v in
+                        UserDefaults.standard.set(v.filter(\.isNumber), forKey: "igAppID")
+                    }
+            } header: {
+                Text("Share a Clip")
+            } footer: {
+                Text("Instagram Story sends the clip straight into Instagram's story editor, without saving it to Photos. Instagram asks other apps for a Facebook App ID: if the story editor doesn't open, make a free one at developers.facebook.com > My Apps > Create App, and paste its App ID here. Instagram takes story videos up to about 20 seconds.")
             }
 
             Section("About") {

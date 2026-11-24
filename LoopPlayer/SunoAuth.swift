@@ -30,12 +30,28 @@ final class SunoAuth: ObservableObject {
     private var loadedAt: Date?
     private var cached: (String, Date)?
 
-    private var restored = false
-    private var savedAt: Date?
+    // 1.4.1: kept like Suno Legacy (where the sign-in works): every change to Suno's cookies is
+    // saved, session cookies get a one-year end date, and at start only cookies WebKit lost are
+    // put back, never over newer ones. 1.3.0/1.4.0 put an old copy over fresh cookies when the
+    // page answered "signed out", then wiped the copy: Suno's page was left half signed in and
+    // stuck loading.
+    private var restoreTask: Task<Void, Never>?
+    private var saveTask: Task<Void, Never>?
+    private let watch = SunoCookieWatch()
 
     private init() {
         NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { _ in
             Task { @MainActor in await SunoAuth.shared.saveSession() }
+        }
+    }
+
+    /// Suno's cookies changed (signed in, token refreshed, signed out): save a moment later.
+    func cookiesChanged() {
+        saveTask?.cancel()
+        saveTask = Task {
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            if Task.isCancelled { return }
+            await self.saveSession()
         }
     }
 
@@ -59,51 +75,42 @@ final class SunoAuth: ObservableObject {
         return d.contains("suno") || d.contains("clerk")
     }
 
-    /// Keeps Suno's sign-in cookies in the Keychain (at most once a minute unless forced).
+    /// Keeps all of Suno's cookies (the Keychain, or a protected file), like Suno Legacy.
     func saveSession(force: Bool = false) async {
-        guard signedIn else { return }
-        if !force, let t = savedAt, Date().timeIntervalSince(t) < 60 { return }
+        // Not before the kept copy is back, or a start without WebKit's session cookies would
+        // overwrite it.
+        guard restoreTask != nil else { return }
         let all = await WKWebsiteDataStore.default().httpCookieStore.allCookies()
         let suno = all.filter(SunoAuth.isSunoCookie)
-        // Clerk's "__client" / "__session" cookies prove a session; don't overwrite a good
-        // save with an empty or half one.
-        guard suno.contains(where: { $0.name.hasPrefix("__client") || $0.name.hasPrefix("__session") }) else {
-            if force { FolderLog.append("Suno: no sign-in cookies found to keep (\(suno.count) Suno cookies)") }
-            return
-        }
+        guard !suno.isEmpty else { return }
         if SunoSessionVault.save(suno) {
-            savedAt = Date()
             if force { FolderLog.append("Suno: sign-in kept on this phone (\(suno.count) cookies)") }
         } else {
             FolderLog.append("Suno: couldn't keep the sign-in on this phone")
         }
     }
 
-    /// Puts the kept cookies back into WebKit. Runs once per start (and again with force when
-    /// Suno's page says the session is gone). Newer cookies already in WebKit are kept.
-    func restoreSession(force: Bool = false) async {
-        guard signedIn, force || !restored else { return }
-        restored = true
-        let saved = SunoSessionVault.load()
-        guard !saved.isEmpty else {
-            FolderLog.append("Suno: no kept sign-in to restore")
-            return
+    /// Puts back the kept cookies WebKit lost (never over ones it has), once per start, then
+    /// watches for changes. Everything that loads Suno's page waits for this first.
+    func restoreSession() async {
+        if let t = restoreTask { await t.value; return }
+        let t = Task { @MainActor in
+            let store = WKWebsiteDataStore.default().httpCookieStore
+            let saved = SunoSessionVault.load()
+            let current = await store.allCookies()
+            let have = Set(current.map { "\($0.name)|\($0.domain.lowercased())|\($0.path)" })
+            var put = 0
+            for c in saved {
+                if have.contains("\(c.name)|\(c.domain.lowercased())|\(c.path)") { continue }
+                if let exp = c.expiresDate, exp < Date() { continue }
+                await store.setCookie(c)
+                put += 1
+            }
+            FolderLog.append(saved.isEmpty ? "Suno: nothing kept yet" : "Suno: \(saved.count) kept cookies, \(put) put back")
+            store.add(self.watch)
         }
-        let store = WKWebsiteDataStore.default().httpCookieStore
-        let current = await store.allCookies()
-        var put = 0
-        for c in saved {
-            if let exp = c.expiresDate, exp < Date() { continue }
-            let same = current.first { $0.name == c.name && $0.domain == c.domain && $0.path == c.path }
-            if !force, let same, (same.expiresDate ?? .distantFuture) >= (c.expiresDate ?? .distantPast) { continue }
-            await store.setCookie(c)
-            put += 1
-        }
-        if put > 0 {
-            cached = nil
-            loadedAt = nil
-        }
-        FolderLog.append(put == 0 ? "Suno: sign-in already in place (\(saved.count) kept cookies)" : "Suno: restored the kept sign-in (\(put) of \(saved.count) cookies)")
+        restoreTask = t
+        await t.value
     }
 
     /// A fresh token for Suno's API, or nil when not signed in.
@@ -123,19 +130,18 @@ final class SunoAuth: ObservableObject {
                 if r.hasPrefix("err:") { lastErr = r }
                 if r == "none" {
                     if !retried {
-                        // Often only WebKit lost the cookies (or the page loaded before they were
-                        // back): put the kept ones back and load Suno's page again before giving up.
+                        // The page may have loaded a moment too early: load it once more.
                         retried = true
-                        FolderLog.append("Suno: page shows no sign-in; restoring the kept one and trying again")
-                        await restoreSession(force: true)
+                        FolderLog.append("Suno: page shows no sign-in; asking once more")
                         w.load(URLRequest(url: URL(string: "https://suno.com/")!))
                         loadedAt = Date()
-                        try? await Task.sleep(nanoseconds: 1_000_000_000)
+                        try? await Task.sleep(nanoseconds: 1_500_000_000)
                         continue
                     }
-                    FolderLog.append("Suno: Suno ended the sign-in; sign in again in Settings")
+                    // Signed out on Suno's side. The kept cookies stay (they only fill gaps), so
+                    // nothing fresh is ever overwritten.
+                    FolderLog.append("Suno: Suno shows no sign-in; sign in again in the Suno tab or Settings")
                     setUser(nil)
-                    SunoSessionVault.clear()
                     return nil
                 }
                 if r.hasPrefix("jwt:") {
@@ -284,6 +290,13 @@ final class SunoAuth: ObservableObject {
 
 // MARK: - Kept sign-in
 
+/// Tells SunoAuth when WebKit's cookies change, so the kept copy is always the newest.
+final class SunoCookieWatch: NSObject, WKHTTPCookieStoreObserver {
+    func cookiesDidChange(in cookieStore: WKHTTPCookieStore) {
+        Task { @MainActor in SunoAuth.shared.cookiesChanged() }
+    }
+}
+
 /// Suno's sign-in cookies, kept in the Keychain (this phone only, readable after the first
 /// unlock so background playback works). If the Keychain refuses (it can on some TrollStore
 /// installs), a protected file in the app's own data is used instead. Never the password:
@@ -328,6 +341,12 @@ enum SunoSessionVault {
         return list.compactMap { d in
             var props: [HTTPCookiePropertyKey: Any] = [:]
             for (k, v) in d { props[HTTPCookiePropertyKey(k)] = v }
+            // Session cookies (no end date) are dropped by WebKit whenever the app closes; given
+            // a one-year end date they stay, as in Suno Legacy.
+            if props[.expires] == nil, props[.maximumAge] == nil {
+                props[.expires] = Date().addingTimeInterval(365 * 24 * 3600)
+            }
+            props[.discard] = nil
             return HTTPCookie(properties: props)
         }
     }

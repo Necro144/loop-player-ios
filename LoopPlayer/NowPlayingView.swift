@@ -45,6 +45,7 @@ struct NowPlayingView: View {
         .sheet(item: $info) { t in TrackInfoView(track: t) }
         .fullScreenCover(isPresented: $videoFullScreen) { FullScreenVideoView() }
         .overlay(alignment: .top) { ToastOverlay() }
+        .overlay { ClipProgressOverlay() }
         .onChange(of: player.current == nil) { gone in if gone { dismiss() } }
     }
 
@@ -59,6 +60,13 @@ struct NowPlayingView: View {
                 Text("\(player.index + 1) of \(player.queue.count)").font(.caption.weight(.semibold))
             }
             Spacer()
+            if let t {
+                ClipShareMenu(video: t.isVideo) {
+                    Image(systemName: "square.and.arrow.up").font(.title3.weight(.semibold)).frame(width: 44, height: 44)
+                }
+                .accessibilityLabel("Share a Clip")
+                .accessibilityIdentifier("share-clip")
+            }
             Menu {
                 if let t {
                     Button { pickIDs = TrackIDs(ids: [t.id]) } label: { Label("Add to Playlist…", systemImage: "music.note.list") }
@@ -594,6 +602,10 @@ struct FullScreenVideoView: View {
                         }
                         Text(player.current?.title ?? "").font(.headline).lineLimit(1)
                         Spacer()
+                        ClipShareMenu(video: true) {
+                            Image(systemName: "square.and.arrow.up").font(.title3).frame(width: 44, height: 44)
+                        }
+                        .accessibilityLabel("Share a Clip")
                         Button { fill.toggle() } label: {
                             Image(systemName: fill ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
                                 .font(.title3).frame(width: 44, height: 44)
@@ -625,6 +637,7 @@ struct FullScreenVideoView: View {
                 .transition(.opacity)
             }
         }
+        .overlay { ClipProgressOverlay() }
         .statusBarHidden(!controls)
         .onAppear { scheduleHide() }
         .onChange(of: player.current?.isVideo ?? false) { isVideo in if !isVideo { dismiss() } }

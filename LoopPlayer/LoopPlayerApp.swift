@@ -298,6 +298,11 @@ enum TestHooks {
                     try? await Task.sleep(nanoseconds: 800_000_000)
                     Player.shared.showFullPlayer = true
                 }
+                if let secs = env["TEST_CLIP"].flatMap(Double.init) {
+                    // Share a Clip: cut `secs` seconds from where the video is after a few seconds.
+                    try? await Task.sleep(nanoseconds: 5_000_000_000)
+                    ClipMaker.shared.make(seconds: secs)
+                }
                 if let out = env["TEST_BG_OUT"] {
                     // The test sends the app to the background meanwhile (opens Settings).
                     let wait = Double(env["TEST_BG_WAIT"] ?? "40") ?? 40

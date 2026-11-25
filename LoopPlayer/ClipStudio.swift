@@ -486,7 +486,7 @@ enum ClipStudioPreview {
             base = up.cgImage.map { CIImage(cgImage: $0) }
             sourceSize = s
         case .video(let u):
-            base = await frame(of: AVURLAsset(url: u), at: 0.5)
+            base = await frame(of: AVURLAsset(url: u), at: min(o.seconds, 20) / 2)
             sourceSize = base?.extent.size ?? sourceSize
         case .nowPlaying:
             guard let t = player.current else { return nil }
@@ -494,7 +494,9 @@ enum ClipStudioPreview {
             artist = t.artist
             if t.isVideo, let a = player.avPlayer.currentItem?.asset {
                 var at = player.clock.time
-                if o.start == .beginning { at = 0.5 } else if o.start == .loop, let la = player.loopA { at = la }
+                if o.start == .beginning { at = 0 } else if o.start == .loop, let la = player.loopA { at = la }
+                // The middle of the clip (song videos often open on black).
+                at += min(o.seconds, 20) / 2
                 base = await frame(of: a, at: at)
                 sourceSize = base?.extent.size ?? sourceSize
             } else if !o.soundOnly {
@@ -530,7 +532,14 @@ enum ClipStudioPreview {
         g.maximumSize = CGSize(width: 1280, height: 1280)
         g.requestedTimeToleranceBefore = CMTime(seconds: 1, preferredTimescale: 600)
         g.requestedTimeToleranceAfter = CMTime(seconds: 1, preferredTimescale: 600)
-        guard let cg = try? await g.image(at: CMTime(seconds: max(0, seconds), preferredTimescale: 600)).image else { return nil }
-        return CIImage(cgImage: cg)
+        // The asked moment, else a little later or earlier: the first one that isn't (nearly) black.
+        var best: (CGImage, Double)?
+        for t in [seconds, seconds + 3, seconds + 8, max(0, seconds - 5), 1] {
+            guard let cg = try? await g.image(at: CMTime(seconds: max(0, t), preferredTimescale: 600)).image else { continue }
+            let light = ClipMaker.brightness(cg)
+            if light > 0.09 { return CIImage(cgImage: cg) }
+            if best == nil || light > best!.1 { best = (cg, light) }
+        }
+        return best.map { CIImage(cgImage: $0.0) }
     }
 }

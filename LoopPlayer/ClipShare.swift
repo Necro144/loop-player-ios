@@ -407,13 +407,14 @@ final class ClipMaker: ObservableObject {
         for _ in 0..<times { try comp.insertTimeRange(range, of: asset, at: comp.duration) }
     }
 
-    /// A black picture track `seconds` long, for song cards (one frame a second).
+    /// A black picture track `seconds` long, for song cards (two frames a second; 64x64 was
+    /// refused by the decoder, OSStatus -16976).
     static func blankVideo(seconds: Double) async -> URL? {
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("blank-\(Int(seconds * 10)).mov")
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("blank320-\(Int(seconds * 10)).mov")
         if FileManager.default.fileExists(atPath: url.path) { return url }
         guard let w = try? AVAssetWriter(outputURL: url, fileType: .mov) else { return nil }
         let input = AVAssetWriterInput(mediaType: .video, outputSettings: [AVVideoCodecKey: AVVideoCodecType.h264,
-                                                                           AVVideoWidthKey: 64, AVVideoHeightKey: 64])
+                                                                           AVVideoWidthKey: 320, AVVideoHeightKey: 320])
         input.expectsMediaDataInRealTime = false
         let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: nil)
         guard w.canAdd(input) else { return nil }
@@ -421,7 +422,7 @@ final class ClipMaker: ObservableObject {
         guard w.startWriting() else { return nil }
         w.startSession(atSourceTime: .zero)
         var pb: CVPixelBuffer?
-        CVPixelBufferCreate(kCFAllocatorDefault, 64, 64, kCVPixelFormatType_32BGRA, nil, &pb)
+        CVPixelBufferCreate(kCFAllocatorDefault, 320, 320, kCVPixelFormatType_32BGRA, nil, &pb)
         guard let buf = pb else { return nil }
         CVPixelBufferLockBaseAddress(buf, [])
         if let base = CVPixelBufferGetBaseAddress(buf) { memset(base, 0, CVPixelBufferGetDataSize(buf)) }
@@ -430,7 +431,7 @@ final class ClipMaker: ObservableObject {
         while t <= seconds {
             while !input.isReadyForMoreMediaData { try? await Task.sleep(nanoseconds: 5_000_000) }
             adaptor.append(buf, withPresentationTime: CMTime(seconds: t, preferredTimescale: 600))
-            t += 1
+            t += 0.5
         }
         input.markAsFinished()
         w.endSession(atSourceTime: CMTime(seconds: seconds, preferredTimescale: 600))

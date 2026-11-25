@@ -87,6 +87,7 @@ struct RootView: View {
     @EnvironmentObject var library: Library
     @EnvironmentObject var player: Player
     @EnvironmentObject var ui: AppUI
+    @ObservedObject private var clips = ClipMaker.shared
 
     var body: some View {
         ZStack {
@@ -100,6 +101,10 @@ struct RootView: View {
         .sheet(isPresented: $player.showFullPlayer) {
             NowPlayingView()
         }
+        .sheet(isPresented: $clips.openStudio) {
+            ClipStudioView()
+        }
+        .onOpenURL { url in ClipMaker.shared.handle(url) }
         .sheet(item: $ui.addToPlaylist) { box in
             PlaylistPickerView(ids: box.ids)
         }
@@ -305,7 +310,35 @@ enum TestHooks {
                         Player.shared.setRate(r)
                     }
                     try? await Task.sleep(nanoseconds: 5_000_000_000)
-                    ClipMaker.shared.make(seconds: secs)
+                    // Clip Studio choices (1.5.0).
+                    var o = ClipOptions()
+                    o.seconds = secs
+                    if let v = env["TEST_CLIP_SIZE"].flatMap(ClipSize.init(rawValue:)) { o.size = v }
+                    if let v = env["TEST_CLIP_LOOK"].flatMap(ClipLook.init(rawValue:)) { o.look = v }
+                    if let v = env["TEST_CLIP_REPEAT"].flatMap(Int.init) { o.repeats = v }
+                    o.caption = env["TEST_CLIP_CAPTION"] ?? ""
+                    o.showTitle = env["TEST_CLIP_TITLE"] == "1"
+                    o.fade = env["TEST_CLIP_FADE"] == "1"
+                    o.watermark = env["TEST_CLIP_STAMP"] == "1"
+                    if env["TEST_CLIP_PHOTO"] == "1" {
+                        // A made-up 800x600 photo, as if picked from the library.
+                        let f = UIGraphicsImageRendererFormat()
+                        f.scale = 1
+                        let img = UIGraphicsImageRenderer(size: CGSize(width: 800, height: 600), format: f).image { c in
+                            UIColor.systemTeal.setFill()
+                            c.fill(CGRect(x: 0, y: 0, width: 800, height: 600))
+                            UIColor.systemPink.setFill()
+                            c.fill(CGRect(x: 200, y: 150, width: 400, height: 300))
+                        }
+                        let u = FileManager.default.temporaryDirectory.appendingPathComponent("test-photo.img")
+                        try? img.jpegData(compressionQuality: 0.9)?.write(to: u)
+                        ClipMaker.shared.source = .photo(u)
+                    }
+                    ClipMaker.shared.make(o, to: .share)
+                }
+                if env["TEST_STUDIO"] == "1" {
+                    try? await Task.sleep(nanoseconds: 3_000_000_000)
+                    ClipMaker.shared.openStudio = true
                 }
                 if let out = env["TEST_BG_OUT"] {
                     // The test sends the app to the background meanwhile (opens Settings).

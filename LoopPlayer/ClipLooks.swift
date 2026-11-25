@@ -105,6 +105,43 @@ enum ClipLook: String, CaseIterable, Codable, Identifiable {
     }
 }
 
+/// Where the caption goes.
+enum CaptionPlace: String, CaseIterable, Codable, Identifiable {
+    case top, middle, bottom
+    var id: String { rawValue }
+    var title: String { rawValue.capitalized }
+}
+
+/// Caption colours.
+enum CaptionColor: String, CaseIterable, Codable, Identifiable {
+    case white, yellow, pink, cyan, black
+    var id: String { rawValue }
+    var title: String { rawValue.capitalized }
+    var ui: UIColor {
+        switch self {
+        case .white: return .white
+        case .yellow: return UIColor(red: 1, green: 0.86, blue: 0.2, alpha: 1)
+        case .pink: return UIColor(red: 1, green: 0.27, blue: 0.47, alpha: 1)
+        case .cyan: return UIColor(red: 0.3, green: 0.9, blue: 1, alpha: 1)
+        case .black: return .black
+        }
+    }
+    var color: Color { Color(ui) }
+}
+
+/// How a song's picture moves on its song card.
+enum CardStyle: String, CaseIterable, Codable, Identifiable {
+    case bounce, vinyl, still
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .bounce: return "Bounce"
+        case .vinyl: return "Spinning vinyl"
+        case .still: return "Still"
+        }
+    }
+}
+
 enum ClipQuality: String, CaseIterable, Codable, Identifiable {
     case auto, p720, p1080, k4
     var id: String { rawValue }
@@ -157,6 +194,9 @@ struct ClipOptions: Codable, Equatable {
     var quality: ClipQuality = .auto
     /// Songs without a picture: a sound file instead of a song card video.
     var soundOnly = false
+    var captionPlace: CaptionPlace = .bottom
+    var captionColor: CaptionColor = .white
+    var cardStyle: CardStyle = .bounce
 
     static let lengthChoices: [Double] = [5, 10, 15, 20, 30, 40, 45, 60, 90, 120, 180, 300, 600]
     static let speedChoices: [Double] = [0, 0.5, 0.75, 0.8, 1, 1.25, 1.5, 2]
@@ -168,9 +208,17 @@ struct ClipOptions: Codable, Equatable {
         return "\(n / 60):" + String(format: "%02d", n % 60)
     }
 
+    /// The last choices. New choices added in an update get their defaults; the old ones stay.
     static var saved: ClipOptions {
         guard let d = UserDefaults.standard.data(forKey: "clipOptions.v1"),
-              let o = try? JSONDecoder().decode(ClipOptions.self, from: d) else { return ClipOptions() }
+              let stored = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any],
+              let defaults = try? JSONEncoder().encode(ClipOptions()),
+              var base = (try? JSONSerialization.jsonObject(with: defaults)) as? [String: Any] else { return ClipOptions() }
+        base.merge(stored) { _, new in new }
+        guard let merged = try? JSONSerialization.data(withJSONObject: base),
+              var o = try? JSONDecoder().decode(ClipOptions.self, from: merged) else { return ClipOptions() }
+        o.seconds = min(600, max(1, o.seconds))
+        o.repeats = min(5, max(1, o.repeats))
         return o
     }
 
@@ -218,9 +266,11 @@ final class ClipPainter: @unchecked Sendable {
     let total: Double
     /// Song card: the song's picture (looks already applied).
     let art: CIImage?
+    let cardStyle: CardStyle
 
     init(render: CGSize, framing: ClipFraming, look: ClipLook, natural: CGSize, orientation: CGImagePropertyOrientation?,
-         overlay: CIImage?, fade: Bool, total: Double, art: CIImage?) {
+         overlay: CIImage?, fade: Bool, total: Double, art: CIImage?, cardStyle: CardStyle = .bounce) {
+        self.cardStyle = cardStyle
         self.render = render
         self.framing = framing
         self.look = look
@@ -302,9 +352,10 @@ final class ClipPainter: @unchecked Sendable {
     /// Song card: blurred picture behind, the picture gently bouncing, a moving progress bar.
     private func card(_ art: CIImage, t: Double) -> CIImage {
         let l = ClipCardLayout(render)
-        let bounce = 1 + 0.025 * CGFloat(sin(t * .pi * 2))
-        let s = l.side / max(art.extent.width, art.extent.height, 1) * bounce
-        let a = place(art, scale: s, centerY: render.height - l.artCenterY)
+        let bounce = cardStyle == .bounce ? 1 + 0.025 * CGFloat(sin(t * .pi * 2)) : 1
+        let pic = cardStyle == .vinyl ? vinyl(art, t: t) : art
+        let s = l.side / max(pic.extent.width, pic.extent.height, 1) * bounce
+        let a = place(pic, scale: s, centerY: render.height - l.artCenterY)
         var out = a.composited(over: blurred(art))
         let w = render.width * 0.72
         let x0 = (render.width - w) / 2
@@ -316,6 +367,31 @@ final class ClipPainter: @unchecked Sendable {
             .cropped(to: CGRect(x: x0, y: y0, width: max(l.barHeight, w * p), height: l.barHeight))
         out = bar.composited(over: track.composited(over: out))
         return out
+    }
+
+    /// The picture as a round record turning once every 3 seconds, with a hole in the middle.
+    private func vinyl(_ art: CIImage, t: Double) -> CIImage {
+        let side = min(art.extent.width, art.extent.height)
+        guard side > 4 else { return art }
+        var a = art.cropped(to: CGRect(x: art.extent.midX - side / 2, y: art.extent.midY - side / 2, width: side, height: side))
+        a = a.transformed(by: CGAffineTransform(translationX: -a.extent.minX, y: -a.extent.minY))
+        let c = side / 2
+        let angle = -CGFloat(t) * .pi * 2 / 3
+        a = a.transformed(by: CGAffineTransform(translationX: -c, y: -c)
+            .concatenating(CGAffineTransform(rotationAngle: angle))
+            .concatenating(CGAffineTransform(translationX: c, y: c)))
+        let box = CGRect(x: 0, y: 0, width: side, height: side)
+        func ring(_ r0: CGFloat, _ r1: CGFloat, _ inner: CIColor, _ outer: CIColor) -> CIImage {
+            (CIFilter(name: "CIRadialGradient", parameters: [
+                "inputCenter": CIVector(x: c, y: c), "inputRadius0": r0, "inputRadius1": r1,
+                "inputColor0": inner, "inputColor1": outer,
+            ])?.outputImage ?? CIImage.empty()).cropped(to: box)
+        }
+        let mask = ring(c - 2, c, CIColor(red: 1, green: 1, blue: 1), CIColor(red: 0, green: 0, blue: 0, alpha: 0))
+        let disc = a.applyingFilter("CIBlendWithMask", parameters: [kCIInputBackgroundImageKey: CIImage.empty(),
+                                                                    kCIInputMaskImageKey: mask]).cropped(to: box)
+        let hole = ring(side * 0.05, side * 0.056, CIColor(red: 0.06, green: 0.06, blue: 0.06), CIColor(red: 0, green: 0, blue: 0, alpha: 0))
+        return hole.composited(over: disc).cropped(to: box)
     }
 
     /// The song's picture, or a Loop Player gradient when it has none.
@@ -346,6 +422,7 @@ final class ClipPainter: @unchecked Sendable {
             shadow.shadowBlurRadius = 10 * k
             shadow.shadowOffset = .zero
             func draw(_ text: String, font: UIFont, color: UIColor = .white, centerY: CGFloat, align: NSTextAlignment = .center) {
+                shadow.shadowColor = color == .black ? UIColor.white.withAlphaComponent(0.8) : UIColor.black.withAlphaComponent(0.75)
                 let p = NSMutableParagraphStyle()
                 p.alignment = align
                 p.lineBreakMode = .byWordWrapping
@@ -361,8 +438,13 @@ final class ClipPainter: @unchecked Sendable {
                 draw(line, font: .systemFont(ofSize: 44 * k, weight: .bold), centerY: card ? layout.titleY : size.height * 0.89)
             }
             if !caption.isEmpty {
-                draw(caption, font: .systemFont(ofSize: 60 * k, weight: .heavy),
-                     centerY: card ? layout.captionY : size.height * (showTitle ? 0.74 : 0.8))
+                let y: CGFloat
+                switch o.captionPlace {
+                case .top: y = card ? layout.captionY : size.height * 0.14
+                case .middle: y = card ? layout.artCenterY : size.height * 0.5
+                case .bottom: y = card ? min(size.height - 60 * k, layout.barY + 90 * k) : size.height * (showTitle ? 0.74 : 0.8)
+                }
+                draw(caption, font: .systemFont(ofSize: 60 * k, weight: .heavy), color: o.captionColor.ui, centerY: y)
             }
             if o.watermark {
                 draw("▶︎ Loop Player", font: .systemFont(ofSize: 28 * k, weight: .semibold),

@@ -280,6 +280,12 @@ struct ClipStudioView: View {
             Toggle("Fade in and out", isOn: $o.fade)
             if isSong {
                 Toggle("Sound only (no picture)", isOn: $o.soundOnly)
+                if !o.soundOnly {
+                    Picker("Song card", selection: $o.cardStyle) {
+                        ForEach(CardStyle.allCases) { c in Text(c.title).tag(c) }
+                    }
+                    .pickerStyle(.segmented)
+                }
             }
         } header: { Text("Speed and sound") } footer: {
             Text(isSong ? "Songs become a song card video (their picture bouncing, a moving progress bar) so Snapchat and Instagram take them." :
@@ -295,8 +301,26 @@ struct ClipStudioView: View {
 
     private var textSection: some View {
         Section {
-            TextField("Caption (optional)", text: $o.caption, axis: .vertical)
+            TextField("Caption (optional, emoji too)", text: $o.caption, axis: .vertical)
                 .lineLimit(1...3)
+            if !o.caption.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Picker("Where", selection: $o.captionPlace) {
+                    ForEach(CaptionPlace.allCases) { p in Text(p.title).tag(p) }
+                }
+                .pickerStyle(.segmented)
+                HStack(spacing: 12) {
+                    ForEach(CaptionColor.allCases) { c in
+                        Button { o.captionColor = c } label: {
+                            Circle().fill(c.color).frame(width: 30, height: 30)
+                                .overlay(Circle().stroke(o.captionColor == c ? Theme.accent : Color.white.opacity(0.3),
+                                                         lineWidth: o.captionColor == c ? 3 : 1))
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(c.title)
+                    }
+                }
+                .padding(.vertical, 4)
+            }
             if !isPicked { Toggle("Song title on it", isOn: $o.showTitle) }
             Toggle("Loop Player stamp", isOn: $o.watermark)
         } header: { Text("Text") }
@@ -516,7 +540,7 @@ enum ClipStudioPreview {
         let small = CGSize(width: (full.width * k).rounded(), height: (full.height * k).rounded())
         let painter = ClipPainter(render: small, framing: o.framing, look: o.look, natural: base.extent.size, orientation: nil,
                                   overlay: ClipPainter.overlay(size: small, options: o, title: card || o.showTitle ? title : "", artist: artist, card: card),
-                                  fade: false, total: card ? 10 : 0, art: card ? art : nil)
+                                  fade: false, total: card ? 10 : 0, art: card ? art : nil, cardStyle: o.cardStyle)
         let out: UIImage? = await Task.detached(priority: .userInitiated) {
             let img = painter.frame(base, t: card ? 4 : 0)
             guard let cg = CIContext().createCGImage(img, from: CGRect(origin: .zero, size: small)) else { return nil }

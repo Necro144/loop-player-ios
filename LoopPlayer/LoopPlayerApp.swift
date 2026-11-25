@@ -320,6 +320,9 @@ enum TestHooks {
                     o.showTitle = env["TEST_CLIP_TITLE"] == "1"
                     o.fade = env["TEST_CLIP_FADE"] == "1"
                     o.watermark = env["TEST_CLIP_STAMP"] == "1"
+                    if let v = env["TEST_CLIP_CARD"].flatMap(CardStyle.init(rawValue:)) { o.cardStyle = v }
+                    if let v = env["TEST_CLIP_CAPTION_PLACE"].flatMap(CaptionPlace.init(rawValue:)) { o.captionPlace = v }
+                    if let v = env["TEST_CLIP_CAPTION_COLOR"].flatMap(CaptionColor.init(rawValue:)) { o.captionColor = v }
                     if env["TEST_CLIP_PHOTO"] == "1" {
                         // A made-up 800x600 photo, as if picked from the library.
                         let f = UIGraphicsImageRendererFormat()

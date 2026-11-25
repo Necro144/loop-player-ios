@@ -16,7 +16,6 @@ jobs:
       - name: Build for the simulator
         run: |
           brew install xcodegen ffmpeg > /dev/null
-          ffmpeg -loglevel error -y -f lavfi -i color=c=black:s=320x320:r=10 -t 10 -c:v libx264 -pix_fmt yuv420p -profile:v baseline -movflags +faststart LoopPlayer/Resources/clip-blank.mp4
           xcodegen generate
           xcodebuild -project LoopPlayer.xcodeproj -scheme LoopPlayer \
             -configuration Debug -sdk iphonesimulator -derivedDataPath simbuild \
@@ -129,8 +128,10 @@ jobs:
           sleep 2; shoot 13c-story-clip
           launch SIMCTL_CHILD_TEST_PLAY=1 SIMCTL_CHILD_TEST_PLAY_TITLE="Long Song Video" SIMCTL_CHILD_TEST_FULL=1 SIMCTL_CHILD_TEST_CLIP=8 SIMCTL_CHILD_TEST_CLIP_REPEAT=2 SIMCTL_CHILD_TEST_CLIP_SIZE=cinematic SIMCTL_CHILD_TEST_CLIP_LOOK=mono SIMCTL_CHILD_TEST_CLIP_OUT="$GITHUB_WORKSPACE/out/cliploop.txt"
           waitfor out/cliploop.txt
-          launch SIMCTL_CHILD_TEST_PLAY=1 SIMCTL_CHILD_TEST_PLAY_VIDEO=0 SIMCTL_CHILD_TEST_FULL=1 SIMCTL_CHILD_TEST_CLIP=6 SIMCTL_CHILD_TEST_CLIP_SIZE=square SIMCTL_CHILD_TEST_CLIP_OUT="$GITHUB_WORKSPACE/out/clipcard.txt"
+          launch SIMCTL_CHILD_TEST_PLAY=1 SIMCTL_CHILD_TEST_PLAY_VIDEO=0 SIMCTL_CHILD_TEST_FULL=1 SIMCTL_CHILD_TEST_CLIP=6 SIMCTL_CHILD_TEST_CLIP_SIZE=square SIMCTL_CHILD_TEST_CLIP_CARD=vinyl SIMCTL_CHILD_TEST_CLIP_CAPTION="Night" SIMCTL_CHILD_TEST_CLIP_CAPTION_COLOR=yellow SIMCTL_CHILD_TEST_CLIP_OUT="$GITHUB_WORKSPACE/out/clipcard.txt"
           waitfor out/clipcard.txt
+          launch SIMCTL_CHILD_TEST_PLAY=1 SIMCTL_CHILD_TEST_PLAY_VIDEO=0 SIMCTL_CHILD_TEST_FULL=1 SIMCTL_CHILD_TEST_CLIP=40 SIMCTL_CHILD_TEST_CLIP_SIZE=story SIMCTL_CHILD_TEST_CLIP_OUT="$GITHUB_WORKSPACE/out/clipcard40.txt"
+          sleep 60; waitfor out/clipcard40.txt
           sleep 2; shoot 13d-song-card-clip
           launch SIMCTL_CHILD_TEST_PLAY=1 SIMCTL_CHILD_TEST_PLAY_TITLE="Long Song Video" SIMCTL_CHILD_TEST_FULL=1 SIMCTL_CHILD_TEST_CLIP=5 SIMCTL_CHILD_TEST_CLIP_PHOTO=1 SIMCTL_CHILD_TEST_CLIP_SIZE=portrait SIMCTL_CHILD_TEST_CLIP_LOOK=warm SIMCTL_CHILD_TEST_CLIP_CAPTION="Hi" SIMCTL_CHILD_TEST_CLIP_OUT="$GITHUB_WORKSPACE/out/clipphoto.txt"
           waitfor out/clipphoto.txt
@@ -184,7 +185,10 @@ jobs:
           check "^audio=true$" out/clipstory.txt "Story clip has the sound"
           check "^video=1920x804$" out/cliploop.txt "Cinematic clip is 1920x804"
           check "^seconds=(7\.[5-9]|8\.[0-5])$" out/cliploop.txt "2x loop clip is 8 s"
-          grep -q "^video=1080x1080$" out/clipcard.txt && echo "ok   song card is 1080x1080" || echo "note song card: not working yet, a sound file is made instead"
+          check "^video=1080x1080$" out/clipcard.txt "song card (vinyl) is 1080x1080"
+          check "^brightness=0\.([1-9]|0[5-9])" out/clipcard.txt "song card has a picture (not black)"
+          check "^video=1080x1920$" out/clipcard40.txt "40 s song card in Story size"
+          check "^audio=true$" out/clipcard40.txt "40 s song card has the sound"
           check "^audio=true$" out/clipcard.txt "song card has the sound"
           check "^seconds=(5\.[5-9]|6\.[0-5])$" out/clipcard.txt "song card is 6 s"
           check "^video=1536x1920$" out/clipphoto.txt "photo made in Portrait 4:5"

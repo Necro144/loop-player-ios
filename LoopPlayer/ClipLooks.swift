@@ -84,11 +84,11 @@ enum ClipLook: String, CaseIterable, Codable, Identifiable {
     func apply(_ i: CIImage) -> CIImage {
         switch self {
         case .none: return i
-        case .vivid: return i.applyingFilter("CIColorControls", ["inputSaturation": 1.45, "inputContrast": 1.08])
-        case .warm: return i.applyingFilter("CIColorMatrix", ["inputRVector": CIVector(x: 1.08, y: 0, z: 0, w: 0),
+        case .vivid: return i.applyingFilter("CIColorControls", parameters: ["inputSaturation": 1.45, "inputContrast": 1.08])
+        case .warm: return i.applyingFilter("CIColorMatrix", parameters: ["inputRVector": CIVector(x: 1.08, y: 0, z: 0, w: 0),
                                                               "inputGVector": CIVector(x: 0, y: 1.0, z: 0, w: 0),
                                                               "inputBVector": CIVector(x: 0, y: 0, z: 0.86, w: 0)])
-        case .cool: return i.applyingFilter("CIColorMatrix", ["inputRVector": CIVector(x: 0.9, y: 0, z: 0, w: 0),
+        case .cool: return i.applyingFilter("CIColorMatrix", parameters: ["inputRVector": CIVector(x: 0.9, y: 0, z: 0, w: 0),
                                                               "inputGVector": CIVector(x: 0, y: 1.0, z: 0, w: 0),
                                                               "inputBVector": CIVector(x: 0, y: 0, z: 1.12, w: 0)])
         case .mono: return i.applyingFilter("CIPhotoEffectMono")
@@ -96,10 +96,10 @@ enum ClipLook: String, CaseIterable, Codable, Identifiable {
         case .vintage: return i.applyingFilter("CIPhotoEffectTransfer")
         case .chrome: return i.applyingFilter("CIPhotoEffectChrome")
         case .fade: return i.applyingFilter("CIPhotoEffectFade")
-        case .dream: return i.applyingFilter("CIBloom", ["inputRadius": 12, "inputIntensity": 0.7]).cropped(to: i.extent)
+        case .dream: return i.applyingFilter("CIBloom", parameters: ["inputRadius": 12, "inputIntensity": 0.7]).cropped(to: i.extent)
         case .pixel:
             let scale = max(6, min(i.extent.width, i.extent.height) / 90)
-            return i.applyingFilter("CIPixellate", ["inputScale": scale,
+            return i.applyingFilter("CIPixellate", parameters: ["inputScale": scale,
                                                     "inputCenter": CIVector(x: i.extent.midX, y: i.extent.midY)]).cropped(to: i.extent)
         }
     }
@@ -266,7 +266,7 @@ final class ClipPainter: @unchecked Sendable {
         if fade, total > 0 {
             let a = CGFloat(max(0, min(1, t / 0.6, (total - t) / 0.6)))
             if a < 1 {
-                out = out.applyingFilter("CIColorMatrix", ["inputRVector": CIVector(x: a, y: 0, z: 0, w: 0),
+                out = out.applyingFilter("CIColorMatrix", parameters: ["inputRVector": CIVector(x: a, y: 0, z: 0, w: 0),
                                                            "inputGVector": CIVector(x: 0, y: a, z: 0, w: 0),
                                                            "inputBVector": CIVector(x: 0, y: 0, z: a, w: 0)])
             }
@@ -295,7 +295,7 @@ final class ClipPainter: @unchecked Sendable {
         let s = fillScale(i) / 8
         let small = i.transformed(by: CGAffineTransform(scaleX: s, y: s))
         let b = small.clampedToExtent().applyingGaussianBlur(sigma: 6).cropped(to: small.extent)
-            .applyingFilter("CIColorControls", ["inputBrightness": -0.12, "inputSaturation": 1.2])
+            .applyingFilter("CIColorControls", parameters: ["inputBrightness": -0.12, "inputSaturation": 1.2])
         return place(b, scale: 8).cropped(to: outRect)
     }
 
@@ -324,7 +324,7 @@ final class ClipPainter: @unchecked Sendable {
             return CIImage(cgImage: cg)
         }
         let r = CGRect(x: 0, y: 0, width: 1000, height: 1000)
-        return CIImage(color: .black).cropped(to: r).applyingFilter("CILinearGradient", [
+        return CIImage(color: .black).cropped(to: r).applyingFilter("CILinearGradient", parameters: [
             "inputPoint0": CIVector(x: 0, y: 1000), "inputColor0": CIColor(red: 1, green: 0.27, blue: 0.47),
             "inputPoint1": CIVector(x: 1000, y: 0), "inputColor1": CIColor(red: 1, green: 0.55, blue: 0.35),
         ]).cropped(to: r)

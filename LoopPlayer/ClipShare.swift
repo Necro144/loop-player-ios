@@ -190,7 +190,7 @@ final class ClipMaker: ObservableObject {
                                 duration: CMTime(seconds: need, preferredTimescale: 600))
         let comp = AVMutableComposition()
         do {
-            for _ in 0..<reps { try comp.insertTimeRange(range, of: inp.asset, at: comp.duration) }
+            try ClipMaker.insert(range, of: inp.asset, times: reps, into: comp)
         } catch {
             fail("This file can't be cut into a clip (\(error.localizedDescription)).")
             return
@@ -349,6 +349,11 @@ final class ClipMaker: ObservableObject {
     }
 
     func cancel() { session?.cancelExport() }
+
+    /// Not async on purpose: from async code Swift picks the newer async insertTimeRange.
+    nonisolated static func insert(_ range: CMTimeRange, of asset: AVAsset, times: Int, into comp: AVMutableComposition) throws {
+        for _ in 0..<times { try comp.insertTimeRange(range, of: asset, at: comp.duration) }
+    }
 
     /// A black picture track `seconds` long, for song cards (one frame a second).
     static func blankVideo(seconds: Double) async -> URL? {

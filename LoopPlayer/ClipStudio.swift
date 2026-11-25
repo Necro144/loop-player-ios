@@ -457,6 +457,10 @@ struct ClipStudioView: View {
                 if Task.isCancelled { return }
                 preview = p.image
                 previewSize = p.size
+                if let out = ProcessInfo.processInfo.environment["TEST_STUDIO_OUT"], let cg = p.image.cgImage {
+                    let text = "preview=\(Int(p.size.width))x\(Int(p.size.height))\nbrightness=\(String(format: "%.2f", ClipMaker.brightness(cg)))"
+                    try? text.write(toFile: out, atomically: true, encoding: .utf8)
+                }
             }
         }
     }

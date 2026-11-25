@@ -126,6 +126,9 @@ final class ClipMaker: ObservableObject {
         session = nil
         FolderLog.append("Clip failed: \(text)")
         error = text
+        if let out = ProcessInfo.processInfo.environment["TEST_CLIP_OUT"] {
+            try? "error=\(text)".write(toFile: out, atomically: true, encoding: .utf8)
+        }
     }
 
     /// What the clip is cut from right now.
@@ -186,11 +189,24 @@ final class ClipMaker: ObservableObject {
             fail("There's nothing to cut there.")
             return
         }
-        let range = CMTimeRange(start: CMTime(seconds: start, preferredTimescale: 600),
+        var range = CMTimeRange(start: CMTime(seconds: start, preferredTimescale: 600),
                                 duration: CMTime(seconds: need, preferredTimescale: 600))
+        var asset = inp.asset
+        if !inp.isVideo {
+            // Songs: the part is first made an AAC file. MP3s and others inside a composition gave
+            // "Operation Stopped" (1.5.0 test); AAC works like a video's sound.
+            switch await ClipMaker.toAAC(inp.asset, range: range) {
+            case .success(let u):
+                asset = AVURLAsset(url: u)
+                range = CMTimeRange(start: .zero, duration: asset.duration)
+            case .failure(let e):
+                fail("The song's sound couldn't be read: \(ClipMaker.explain(e))")
+                return
+            }
+        }
         let comp = AVMutableComposition()
         do {
-            try ClipMaker.insert(range, of: inp.asset, times: reps, into: comp)
+            try ClipMaker.insert(range, of: asset, times: reps, into: comp)
         } catch {
             fail("This file can't be cut into a clip (\(error.localizedDescription)).")
             return
@@ -288,7 +304,7 @@ final class ClipMaker: ObservableObject {
         } else if box.session.status == .cancelled {
             try? FileManager.default.removeItem(at: out)
         } else {
-            fail("The clip couldn't be made: \(box.session.error?.localizedDescription ?? "unknown error")")
+            fail("The clip couldn't be made: \(box.session.error.map { ClipMaker.explain($0) } ?? "unknown error")")
         }
     }
 
@@ -349,6 +365,42 @@ final class ClipMaker: ObservableObject {
     }
 
     func cancel() { session?.cancelExport() }
+
+    /// An error with its code and the reason underneath (for the Player Log).
+    nonisolated static func explain(_ e: Error) -> String {
+        let n = e as NSError
+        var s = "\(n.localizedDescription) (\(n.domain) \(n.code))"
+        if let u = n.userInfo[NSUnderlyingErrorKey] as? NSError { s += " ← \(u.localizedDescription) (\(u.domain) \(u.code))" }
+        if let r = n.localizedFailureReason { s += " " + r }
+        return s
+    }
+
+    /// `range` of a song as an AAC file (the 1.4.0 way, no composition).
+    static func toAAC(_ asset: AVAsset, range: CMTimeRange) async -> Result<URL, Error> {
+        let out = FileManager.default.temporaryDirectory.appendingPathComponent("clip-sound-\(UUID().uuidString).m4a")
+        guard let s = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetAppleM4A) else {
+            return .failure(NSError(domain: "LoopPlayer", code: 1, userInfo: [NSLocalizedDescriptionKey: "no M4A export for this file"]))
+        }
+        s.outputURL = out
+        s.outputFileType = .m4a
+        s.timeRange = range
+        let box = SessionBox(s)
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            s.exportAsynchronously { c.resume() }
+        }
+        if box.session.status == .completed { return .success(out) }
+        return .failure(box.session.error ?? NSError(domain: "LoopPlayer", code: 2, userInfo: [NSLocalizedDescriptionKey: "M4A export stopped"]))
+    }
+
+    /// Average brightness 0...1 of a picture (tests: a clip must not come out black).
+    nonisolated static func brightness(_ cg: CGImage) -> Double {
+        let img = CIImage(cgImage: cg)
+        let avg = img.applyingFilter("CIAreaAverage", parameters: [kCIInputExtentKey: CIVector(cgRect: img.extent)])
+        var px = [UInt8](repeating: 0, count: 4)
+        CIContext().render(avg, toBitmap: &px, rowBytes: 4, bounds: CGRect(x: avg.extent.minX, y: avg.extent.minY, width: 1, height: 1),
+                           format: .RGBA8, colorSpace: CGColorSpaceCreateDeviceRGB())
+        return (Double(px[0]) + Double(px[1]) + Double(px[2])) / (3 * 255)
+    }
 
     /// Not async on purpose: from async code Swift picks the newer async insertTimeRange.
     nonisolated static func insert(_ range: CMTimeRange, of asset: AVAsset, times: Int, into comp: AVMutableComposition) throws {
@@ -435,11 +487,21 @@ final class ClipMaker: ObservableObject {
         let size = (try? FileManager.default.attributesOfItem(atPath: file.path)[.size] as? Int) ?? 0
         var lines = ["file=\(file.lastPathComponent)", "bytes=\(size)"]
         if r.isPhoto {
-            let px = UIImage(contentsOfFile: file.path).map { "\(Int($0.size.width * $0.scale))x\(Int($0.size.height * $0.scale))" } ?? "none"
+            let img = UIImage(contentsOfFile: file.path)
+            let px = img.map { "\(Int($0.size.width * $0.scale))x\(Int($0.size.height * $0.scale))" } ?? "none"
             lines.append("video=\(px)")
+            if let cg = img?.cgImage { lines.append("brightness=\(String(format: "%.2f", ClipMaker.brightness(cg)))") }
         } else {
             let a = AVURLAsset(url: file)
             let v = a.tracks(withMediaType: .video).first
+            if v != nil {
+                let g = AVAssetImageGenerator(asset: a)
+                g.appliesPreferredTrackTransform = true
+                let mid = CMTime(seconds: CMTimeGetSeconds(a.duration) / 2, preferredTimescale: 600)
+                if let cg = try? g.copyCGImage(at: mid, actualTime: nil) {
+                    lines.append("brightness=\(String(format: "%.2f", ClipMaker.brightness(cg)))")
+                }
+            }
             lines += ["seconds=\(String(format: "%.1f", CMTimeGetSeconds(a.duration)))",
                       "video=\(v.map { "\(Int($0.naturalSize.width))x\(Int($0.naturalSize.height))" } ?? "none")",
                       "audio=\(!a.tracks(withMediaType: .audio).isEmpty)"]

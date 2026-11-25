@@ -133,8 +133,9 @@ jobs:
           sleep 2; shoot 13d-song-card-clip
           launch SIMCTL_CHILD_TEST_PLAY=1 SIMCTL_CHILD_TEST_PLAY_TITLE="Long Song Video" SIMCTL_CHILD_TEST_FULL=1 SIMCTL_CHILD_TEST_CLIP=5 SIMCTL_CHILD_TEST_CLIP_PHOTO=1 SIMCTL_CHILD_TEST_CLIP_SIZE=portrait SIMCTL_CHILD_TEST_CLIP_LOOK=warm SIMCTL_CHILD_TEST_CLIP_CAPTION="Hi" SIMCTL_CHILD_TEST_CLIP_OUT="$GITHUB_WORKSPACE/out/clipphoto.txt"
           waitfor out/clipphoto.txt
-          launch SIMCTL_CHILD_TEST_PLAY=1 SIMCTL_CHILD_TEST_PLAY_TITLE="Long Song Video" SIMCTL_CHILD_TEST_STUDIO=1
+          launch SIMCTL_CHILD_TEST_PLAY=1 SIMCTL_CHILD_TEST_PLAY_TITLE="Long Song Video" SIMCTL_CHILD_TEST_STUDIO=1 SIMCTL_CHILD_TEST_STUDIO_OUT="$GITHUB_WORKSPACE/out/studio.txt"
           sleep 14; shoot 13e-clip-studio
+          waitfor out/studio.txt
           xcrun simctl io "$UDID" screenshot shots/13f-clip-studio-again.png || true
           xcrun simctl openurl "$UDID" "loopplayer://studio" || true
           sleep 5; shoot 13g-studio-from-link
@@ -186,6 +187,11 @@ jobs:
           check "^audio=true$" out/clipcard.txt "song card has the sound"
           check "^seconds=(5\.[5-9]|6\.[0-5])$" out/clipcard.txt "song card is 6 s"
           check "^video=1536x1920$" out/clipphoto.txt "photo made in Portrait 4:5"
+          check "^brightness=0\.([1-9]|0[5-9])" out/clipstory.txt "Story clip has a picture (not black)"
+          check "^brightness=0\.([1-9]|0[5-9])" out/cliploop.txt "Cinematic clip has a picture (not black)"
+          check "^brightness=0\.([1-9]|0[5-9])" out/clipcard.txt "song card has a picture (not black)"
+          check "^brightness=0\.([1-9]|0[5-9])" out/clipphoto.txt "photo has a picture (not black)"
+          check "^brightness=0\.([1-9]|0[5-9])" out/studio.txt "Clip Studio preview is not black"
           T=$(grep "^time=" out/bg.txt | cut -d= -f2); if [ "${T:-0}" -ge 35 ]; then echo "ok   background time $T s"; else echo "FAIL background time ${T:-?} s"; fail=1; fi
           cat out/play.txt
           grep -q "^tracks=6$" out/play.txt

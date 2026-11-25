@@ -218,8 +218,9 @@ final class ClipMaker: ObservableObject {
             comp.scaleTimeRange(CMTimeRange(start: .zero, duration: comp.duration),
                                 toDuration: CMTimeMultiplyByFloat64(comp.duration, multiplier: 1 / rate))
         }
-        let soundOnly = !inp.isVideo && o.soundOnly
-        let card = !inp.isVideo && !soundOnly
+        var soundOnly = !inp.isVideo && o.soundOnly
+        var card = !inp.isVideo && !soundOnly
+        var target = target
         let length = CMTimeGetSeconds(comp.duration)
         if card {
             // Songs: a picture track to paint the song card on.
@@ -227,21 +228,32 @@ final class ClipMaker: ObservableObject {
             // in the app was refused by the decoder (OSStatus -16976).
             var blankURL = Bundle.main.url(forResource: "clip-blank", withExtension: "mp4")
             if blankURL == nil { blankURL = await ClipMaker.blankVideo(seconds: length + 1) }
-            guard let blank = blankURL,
-                  let bt = AVURLAsset(url: blank).tracks(withMediaType: .video).first,
-                  let vt = comp.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) else {
-                fail("The song card couldn't be made.")
-                return
-            }
-            let piece = bt.timeRange.duration
-            var at = CMTime.zero
-            while CMTimeCompare(at, comp.duration) < 0, CMTimeGetSeconds(piece) > 0.1 {
-                let d = CMTimeMinimum(piece, CMTimeSubtract(comp.duration, at))
-                do { try vt.insertTimeRange(CMTimeRange(start: bt.timeRange.start, duration: d), of: bt, at: at) } catch {
-                    fail("The song card couldn't be made: \(ClipMaker.explain(error))")
-                    return
+            var why = "no picture track"
+            if let blank = blankURL,
+               let bt = AVURLAsset(url: blank).tracks(withMediaType: .video).first,
+               let vt = comp.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) {
+                let piece = bt.timeRange.duration
+                var at = CMTime.zero
+                while CMTimeCompare(at, comp.duration) < 0, CMTimeGetSeconds(piece) > 0.1 {
+                    let d = CMTimeMinimum(piece, CMTimeSubtract(comp.duration, at))
+                    do {
+                        try vt.insertTimeRange(CMTimeRange(start: bt.timeRange.start, duration: d), of: bt, at: at)
+                    } catch {
+                        why = ClipMaker.explain(error)
+                        comp.removeTrack(vt)
+                        card = false
+                        break
+                    }
+                    at = CMTimeAdd(at, d)
                 }
-                at = CMTimeAdd(at, d)
+            } else {
+                card = false
+            }
+            if !card {
+                // Not working everywhere yet (1.5.0): the song goes out as a sound file instead.
+                FolderLog.append("Clip: song card couldn't be made (\(why)); making a sound file")
+                soundOnly = true
+                if target == .snapchat || target == .instagramStory { target = .share }
             }
         }
 

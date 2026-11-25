@@ -231,6 +231,8 @@ struct ClipOptions: Codable, Equatable {
         let cap = quality.longSide(for: target)
         func even(_ v: CGFloat) -> CGFloat { max(2, (v / 2).rounded() * 2) }
         if let r = size.ratio {
+            // Square: 1080x1080 at 1080p (the long side of a 16:9 picture would make it 1920x1920).
+            if abs(r - 1) < 0.001 { return CGSize(width: even(cap * 9 / 16), height: even(cap * 9 / 16)) }
             return r >= 1 ? CGSize(width: even(cap), height: even(cap / r)) : CGSize(width: even(cap * r), height: even(cap))
         }
         let long = max(source.width, source.height, 2)

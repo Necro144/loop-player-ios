@@ -838,6 +838,7 @@ struct SettingsView: View {
     @State private var clearing = false
     @State private var ytKey = UserDefaults.standard.string(forKey: "ytApiKey") ?? ""
     @State private var igAppID = UserDefaults.standard.string(forKey: "igAppID") ?? ""
+    @State private var snapClientID = UserDefaults.standard.string(forKey: "snapClientID") ?? ""
     @State private var lockReport: [String]?
     @ObservedObject private var suno = SunoAuth.shared
     @State private var sunoSignIn = false
@@ -985,10 +986,16 @@ struct SettingsView: View {
                     .onChange(of: igAppID) { v in
                         UserDefaults.standard.set(v.filter(\.isNumber), forKey: "igAppID")
                     }
+                TextField("Snap Kit client ID (for Snapchat)", text: $snapClientID)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .onChange(of: snapClientID) { v in
+                        UserDefaults.standard.set(v.trimmingCharacters(in: .whitespacesAndNewlines), forKey: "snapClientID")
+                    }
             } header: {
                 Text("Share a Clip")
             } footer: {
-                Text("Instagram Story sends the clip straight into Instagram's story editor, without saving it to Photos. Instagram asks other apps for a Facebook App ID: if the story editor doesn't open, make a free one at developers.facebook.com > My Apps > Create App, and paste its App ID here. Instagram takes story videos up to about 20 seconds.")
+                Text("Instagram Story sends the clip straight into Instagram's story editor, without saving it to Photos. Instagram asks other apps for a Facebook App ID: if the story editor doesn't open, make a free one at developers.facebook.com > My Apps > Create App, and paste its App ID here. Instagram takes story videos up to about 20 seconds.\n\nSnapchat Story opens Snapchat with the clip as a full-screen snap (not a chat attachment): tap Stories to post it. If Snapchat says the app isn't allowed, make a free app at kit.snapchat.com (bundle ID com.necro144.loopplayer, your username as a demo user) and paste its Public OAuth Client ID here.")
             }
 
             Section("About") {

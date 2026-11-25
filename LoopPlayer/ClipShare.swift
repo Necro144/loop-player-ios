@@ -12,6 +12,9 @@ enum ClipTarget {
     case share
     /// Straight into Instagram's story editor, not saved to Photos.
     case instagramStory
+    /// Straight into Snapchat as a full-screen snap (post it to your Story or send it), not
+    /// saved to Photos and not as a chat attachment.
+    case snapchat
 }
 
 @MainActor
@@ -88,6 +91,7 @@ final class ClipMaker: ObservableObject {
                     switch target {
                     case .share: self.share(out)
                     case .instagramStory: self.toInstagramStory(out)
+                    case .snapchat: self.toSnapchat(out)
                     }
                 } else if box.session.status != .cancelled {
                     let why = box.session.error?.localizedDescription ?? "unknown error"
@@ -157,6 +161,37 @@ final class ClipMaker: ObservableObject {
         }
     }
 
+    /// Snapchat's Creative Kit (the code-only "Lite" way from Snap's own sample): the video goes on
+    /// the pasteboard for Snapchat (5 minutes, cleared once Snapchat reads it) and Snapchat opens
+    /// its snap editor with it ("Snapchat pasted from Loop Player"). From there: My Story or a friend.
+    private func toSnapchat(_ file: URL) {
+        guard let data = try? Data(contentsOf: file, options: .uncached) else {
+            error = "The clip couldn't be read."
+            return
+        }
+        let clientID = (UserDefaults.standard.string(forKey: "snapClientID") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard var parts = URLComponents(string: "snapchat://creativekit/preview/1"),
+              let probe = parts.url, UIApplication.shared.canOpenURL(probe) else {
+            error = "Snapchat isn't installed on this iPhone. Use Share instead."
+            return
+        }
+        var item: [String: Any] = ["com.snapchat.creativekit.backgroundVideo": data,
+                                   "com.snapchat.creativekit.appName": "Loop Player"]
+        if !clientID.isEmpty { item["com.snapchat.creativekit.clientID"] = clientID }
+        UIPasteboard.general.setItems([item], options: [.expirationDate: Date().addingTimeInterval(300)])
+        var query = [URLQueryItem(name: "checkcount", value: String(UIPasteboard.general.changeCount)),
+                     URLQueryItem(name: "appDisplayName", value: "Loop Player")]
+        if !clientID.isEmpty { query.insert(URLQueryItem(name: "clientId", value: clientID), at: 1) }
+        parts.queryItems = query
+        guard let url = parts.url else { return }
+        FolderLog.append("Clip: sent to Snapchat (\(data.count / 1024) KB" + (clientID.isEmpty ? ", no Snap client ID)" : ")"))
+        UIApplication.shared.open(url) { [weak self] ok in
+            if !ok {
+                Task { @MainActor in self?.error = "Snapchat didn't open. Use Share instead." }
+            }
+        }
+    }
+
     private func share(_ file: URL) {
         let sheet = UIActivityViewController(activityItems: [file], applicationActivities: nil)
         guard let top = ClipMaker.topViewController() else { return }
@@ -205,6 +240,15 @@ struct ClipShareMenu<Label: View>: View {
                 }
             }
             if video {
+                Menu {
+                    ForEach(ClipMaker.lengths, id: \.1) { item in
+                        Button { ClipMaker.shared.make(seconds: item.1, to: .snapchat) } label: {
+                            SwiftUI.Label(item.0, systemImage: item.1 < 30 ? "timer" : "clock")
+                        }
+                    }
+                } label: {
+                    SwiftUI.Label("Snapchat Story", systemImage: "camera.viewfinder")
+                }
                 Menu {
                     ForEach(ClipMaker.lengths, id: \.1) { item in
                         Button { ClipMaker.shared.make(seconds: item.1, to: .instagramStory) } label: {

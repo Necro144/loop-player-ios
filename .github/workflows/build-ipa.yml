@@ -16,7 +16,10 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install XcodeGen
-        run: brew install xcodegen
+        run: brew install xcodegen ffmpeg
+
+      - name: Song card picture track (a 10 s black video, made here)
+        run: ffmpeg -loglevel error -y -f lavfi -i color=c=black:s=320x320:r=10 -t 10 -c:v libx264 -pix_fmt yuv420p -profile:v baseline -movflags +faststart LoopPlayer/Resources/clip-blank.mp4
 
       - name: Generate the Xcode project
         run: xcodegen generate

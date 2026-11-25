@@ -223,13 +223,26 @@ final class ClipMaker: ObservableObject {
         let length = CMTimeGetSeconds(comp.duration)
         if card {
             // Songs: a picture track to paint the song card on.
-            guard let blank = await ClipMaker.blankVideo(seconds: length + 1),
+            // A 10 s black video made with ffmpeg at build time (repeated to fill); a video made
+            // in the app was refused by the decoder (OSStatus -16976).
+            var blankURL = Bundle.main.url(forResource: "clip-blank", withExtension: "mp4")
+            if blankURL == nil { blankURL = await ClipMaker.blankVideo(seconds: length + 1) }
+            guard let blank = blankURL,
                   let bt = AVURLAsset(url: blank).tracks(withMediaType: .video).first,
                   let vt = comp.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) else {
                 fail("The song card couldn't be made.")
                 return
             }
-            try? vt.insertTimeRange(CMTimeRange(start: .zero, duration: comp.duration), of: bt, at: .zero)
+            let piece = bt.timeRange.duration
+            var at = CMTime.zero
+            while CMTimeCompare(at, comp.duration) < 0, CMTimeGetSeconds(piece) > 0.1 {
+                let d = CMTimeMinimum(piece, CMTimeSubtract(comp.duration, at))
+                do { try vt.insertTimeRange(CMTimeRange(start: bt.timeRange.start, duration: d), of: bt, at: at) } catch {
+                    fail("The song card couldn't be made: \(ClipMaker.explain(error))")
+                    return
+                }
+                at = CMTimeAdd(at, d)
+            }
         }
 
         var videoComposition: AVMutableVideoComposition?
@@ -498,10 +511,13 @@ final class ClipMaker: ObservableObject {
             if v != nil {
                 let g = AVAssetImageGenerator(asset: a)
                 g.appliesPreferredTrackTransform = true
-                let mid = CMTime(seconds: CMTimeGetSeconds(a.duration) / 2, preferredTimescale: 600)
-                if let cg = try? g.copyCGImage(at: mid, actualTime: nil) {
-                    lines.append("brightness=\(String(format: "%.2f", ClipMaker.brightness(cg)))")
-                }
+                // The brightest of three moments (the test video has black parts).
+                let d = CMTimeGetSeconds(a.duration)
+                let light = [0.25, 0.5, 0.75].compactMap { f -> Double? in
+                    guard let cg = try? g.copyCGImage(at: CMTime(seconds: d * f, preferredTimescale: 600), actualTime: nil) else { return nil }
+                    return ClipMaker.brightness(cg)
+                }.max()
+                if let light { lines.append("brightness=\(String(format: "%.2f", light))") }
             }
             lines += ["seconds=\(String(format: "%.1f", CMTimeGetSeconds(a.duration)))",
                       "video=\(v.map { "\(Int($0.naturalSize.width))x\(Int($0.naturalSize.height))" } ?? "none")",

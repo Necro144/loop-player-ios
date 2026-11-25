@@ -16,6 +16,7 @@ jobs:
       - name: Build for the simulator
         run: |
           brew install xcodegen ffmpeg > /dev/null
+          ffmpeg -loglevel error -y -f lavfi -i color=c=black:s=320x320:r=10 -t 10 -c:v libx264 -pix_fmt yuv420p -profile:v baseline -movflags +faststart LoopPlayer/Resources/clip-blank.mp4
           xcodegen generate
           xcodebuild -project LoopPlayer.xcodeproj -scheme LoopPlayer \
             -configuration Debug -sdk iphonesimulator -derivedDataPath simbuild \

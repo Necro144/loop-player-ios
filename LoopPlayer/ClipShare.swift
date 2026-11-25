@@ -25,6 +25,33 @@ final class ClipMaker: ObservableObject {
     /// 0...1 while a clip is being made, nil otherwise.
     @Published var progress: Double?
     @Published var error: String?
+    /// Snapchat Story was picked but there's no Snap Kit client ID yet: the length waiting.
+    @Published var snapSetup: Double?
+
+    /// Snapchat only takes clips from apps with their own Snap Kit client ID (1.4.2 on the phone:
+    /// "Snapchat pasted from Loop Player", then "Something went wrong").
+    static var snapClientID: String {
+        (UserDefaults.standard.string(forKey: "snapClientID") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Snapchat Story: asks for the client ID first if there is none.
+    func toSnapchat(seconds: Double) {
+        if ClipMaker.snapClientID.isEmpty {
+            snapSetup = seconds
+        } else {
+            make(seconds: seconds, to: .snapchat)
+        }
+    }
+
+    /// "Paste Client ID": takes a Snap Kit client ID from the clipboard. True when one was found.
+    func pasteSnapClientID() -> Bool {
+        let text = (UIPasteboard.general.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let pattern = "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+        guard let r = text.range(of: pattern, options: .regularExpression) else { return false }
+        UserDefaults.standard.set(String(text[r]), forKey: "snapClientID")
+        FolderLog.append("Clip: Snap Kit client ID saved")
+        return true
+    }
     private var session: AVAssetExportSession?
 
     func make(seconds: Double, to target: ClipTarget = .share) {
@@ -53,8 +80,10 @@ final class ClipMaker: ObservableObject {
             exportRange = CMTimeRange(start: .zero, duration: c.duration)
         }
 
-        // H.264 1080p plays everywhere (Instagram, Snapchat, WhatsApp, older phones).
-        let preset = video ? AVAssetExportPreset1920x1080 : AVAssetExportPresetAppleM4A
+        // H.264 1080p plays everywhere (Instagram, WhatsApp, older phones). Snapchat gets 720p:
+        // a smaller file for its pasteboard hand-over (1080p was 24 MB for 9 s).
+        let preset = !video ? AVAssetExportPresetAppleM4A
+            : (target == .snapchat ? AVAssetExportPreset1280x720 : AVAssetExportPreset1920x1080)
         guard let s = AVAssetExportSession(asset: source, presetName: preset) else {
             error = "This file can't be cut into a clip."
             return
@@ -169,7 +198,7 @@ final class ClipMaker: ObservableObject {
             error = "The clip couldn't be read."
             return
         }
-        let clientID = (UserDefaults.standard.string(forKey: "snapClientID") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let clientID = ClipMaker.snapClientID
         guard var parts = URLComponents(string: "snapchat://creativekit/preview/1"),
               let probe = parts.url, UIApplication.shared.canOpenURL(probe) else {
             error = "Snapchat isn't installed on this iPhone. Use Share instead."
@@ -242,7 +271,7 @@ struct ClipShareMenu<Label: View>: View {
             if video {
                 Menu {
                     ForEach(ClipMaker.lengths, id: \.1) { item in
-                        Button { ClipMaker.shared.make(seconds: item.1, to: .snapchat) } label: {
+                        Button { ClipMaker.shared.toSnapchat(seconds: item.1) } label: {
                             SwiftUI.Label(item.0, systemImage: item.1 < 30 ? "timer" : "clock")
                         }
                     }
@@ -285,5 +314,28 @@ struct ClipProgressOverlay: View {
         .alert("Share a Clip", isPresented: Binding(get: { maker.error != nil }, set: { if !$0 { maker.error = nil } })) {
             Button("OK", role: .cancel) {}
         } message: { Text(maker.error ?? "") }
+        .alert("Snapchat needs a client ID", isPresented: Binding(get: { maker.snapSetup != nil }, set: { if !$0 { maker.snapSetup = nil } })) {
+            Button("Paste Client ID") {
+                let secs = maker.snapSetup ?? 10
+                maker.snapSetup = nil
+                if maker.pasteSnapClientID() {
+                    maker.make(seconds: secs, to: .snapchat)
+                } else {
+                    maker.error = "No client ID on the clipboard. Copy the Public OAuth Client ID (it looks like 1a2b3c4d-...) from kit.snapchat.com, then try again."
+                }
+            }
+            Button("Open kit.snapchat.com") {
+                maker.snapSetup = nil
+                if let u = URL(string: "https://kit.snapchat.com/manage") { UIApplication.shared.open(u) }
+            }
+            Button("Try Anyway") {
+                let secs = maker.snapSetup ?? 10
+                maker.snapSetup = nil
+                maker.make(seconds: secs, to: .snapchat)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Snapchat only takes clips from apps with their own free Snap Kit ID (other apps have theirs). One time, about 5 minutes: on kit.snapchat.com log in with your Snapchat, New App, any name, iOS bundle ID com.necro144.loopplayer, add your Snapchat username under Demo Users, turn on Creative Kit, then copy the Public OAuth Client ID (Development) and tap Paste Client ID here.")
+        }
     }
 }

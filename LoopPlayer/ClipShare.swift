@@ -31,7 +31,9 @@ final class ClipMaker: ObservableObject {
     /// Snapchat only takes clips from apps with their own Snap Kit client ID (1.4.2 on the phone:
     /// "Snapchat pasted from Loop Player", then "Something went wrong").
     static var snapClientID: String {
-        (UserDefaults.standard.string(forKey: "snapClientID") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let own = (UserDefaults.standard.string(forKey: "snapClientID") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        // Loop Player's own Snap Kit app (Staging, Creative Kit on; works for its demo users).
+        return own.isEmpty ? "4ef4e741-377e-4be5-a85d-d51758ed5e5c" : own
     }
 
     /// Snapchat Story: asks for the client ID first if there is none.

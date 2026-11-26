@@ -525,10 +525,10 @@ struct ColorMatrix {
     static func diagonal(_ r: Float, _ g: Float, _ b: Float) -> ColorMatrix { ColorMatrix(m: [r, 0, 0, 0, g, 0, 0, 0, b], bias: [0, 0, 0]) }
     static func saturation(_ s: Float) -> ColorMatrix {
         let lr: Float = 0.2126, lg: Float = 0.7152, lb: Float = 0.0722
-        let i = 1 - s
-        return ColorMatrix(m: [i * lr + s, i * lg, i * lb,
-                               i * lr, i * lg + s, i * lb,
-                               i * lr, i * lg, i * lb + s], bias: [0, 0, 0])
+        let i: Float = 1 - s
+        let r: Float = i * lr, g: Float = i * lg, b: Float = i * lb
+        let m: [Float] = [r + s, g, b, r, g + s, b, r, g, b + s]
+        return ColorMatrix(m: m, bias: [0, 0, 0])
     }
     static func contrast(_ c: Float) -> ColorMatrix {
         let b = 0.5 * (1 - c)
@@ -542,9 +542,21 @@ struct ColorMatrix {
         var b = [Float](repeating: 0, count: 3)
         for r in 0..<3 {
             for c in 0..<3 {
-                out[r * 3 + c] = (0..<3).reduce(0) { $0 + next.m[r * 3 + $1] * m[$1 * 3 + c] }
+                var sum: Float = 0
+                for k in 0..<3 {
+                    let x: Float = next.m[r * 3 + k]
+                    let y: Float = m[k * 3 + c]
+                    sum += x * y
+                }
+                out[r * 3 + c] = sum
             }
-            b[r] = (0..<3).reduce(next.bias[r]) { $0 + next.m[r * 3 + $1] * bias[$1] }
+            var sb: Float = next.bias[r]
+            for k in 0..<3 {
+                let x: Float = next.m[r * 3 + k]
+                let y: Float = bias[k]
+                sb += x * y
+            }
+            b[r] = sb
         }
         return ColorMatrix(m: out, bias: b)
     }
@@ -564,9 +576,12 @@ struct ColorMatrix {
         let divisor: Int32 = 256
         for o in 0..<3 {
             for s in 0..<3 {
-                vm[mem[s] * 4 + mem[o]] = Int16(max(-32767, min(32767, (m[o * 3 + s] * Float(divisor)).rounded())))
+                let v: Float = (m[o * 3 + s] * Float(divisor)).rounded()
+                let clamped: Float = Swift.max(-32767, Swift.min(32767, v))
+                vm[mem[s] * 4 + mem[o]] = Int16(clamped)
             }
-            post[mem[o]] = Int32((bias[o] * 255 * Float(divisor)).rounded())
+            let pb: Float = bias[o] * 255 * Float(divisor)
+            post[mem[o]] = Int32(pb.rounded())
         }
         vm[3 * 4 + 3] = Int16(divisor)
         vImageMatrixMultiply_ARGB8888(&buf, &buf, vm, divisor, nil, post, vImage_Flags(kvImageNoFlags))

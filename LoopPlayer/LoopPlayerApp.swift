@@ -87,7 +87,7 @@ struct RootView: View {
     @EnvironmentObject var library: Library
     @EnvironmentObject var player: Player
     @EnvironmentObject var ui: AppUI
-    @ObservedObject private var clips = ClipMaker.shared
+    @ObservedObject private var studio = ClipStudioRouter.shared
 
     var body: some View {
         ZStack {
@@ -101,7 +101,7 @@ struct RootView: View {
         .sheet(isPresented: $player.showFullPlayer) {
             NowPlayingView()
         }
-        .sheet(isPresented: $clips.openStudio) {
+        .sheet(isPresented: $studio.open) {
             ClipStudioView()
         }
         .onOpenURL { url in ClipMaker.shared.handle(url) }

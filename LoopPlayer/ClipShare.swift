@@ -65,11 +65,16 @@ final class ClipMaker: ObservableObject {
     /// A Clip Studio sheet is on screen (the player's own progress box steps aside).
     @Published var studioShown = false
     /// Asks the main screen to open Clip Studio (Settings, loopplayer:// links).
-    @Published var openStudio = false
+    var openStudio: Bool {
+        get { ClipStudioRouter.shared.open }
+        set { ClipStudioRouter.shared.open = newValue }
+    }
     @Published var source: ClipSource = .nowPlaying
 
     private var session: AVAssetExportSession?
     private var cardStop: StopFlag?
+    /// Where the clip being made goes.
+    private var pendingTarget: ClipTarget = .share
     private var started = Date()
 
     /// Snapchat only takes clips from apps with their own Snap Kit client ID. Loop Player's own
@@ -113,6 +118,7 @@ final class ClipMaker: ObservableObject {
         guard progress == nil else { return }
         progress = 0
         started = Date()
+        pendingTarget = target
         Task {
             if case .photo(let url) = source {
                 await makePhoto(url, o, to: target)
@@ -130,6 +136,13 @@ final class ClipMaker: ObservableObject {
         if let out = ProcessInfo.processInfo.environment["TEST_CLIP_OUT"] {
             try? "error=\(text)".write(toFile: out, atomically: true, encoding: .utf8)
         }
+    }
+
+    /// A file being played is read through its own copy, not the player's (1.5.2): cutting and
+    /// previewing no longer compete with playback for the same asset.
+    static func ownCopy(_ a: AVAsset?) -> AVAsset? {
+        if let u = a as? AVURLAsset, u.url.isFileURL { return AVURLAsset(url: u.url) }
+        return a
     }
 
     /// What the clip is cut from right now.
@@ -153,7 +166,7 @@ final class ClipMaker: ObservableObject {
             return Input(asset: a, title: "Video", artist: "", isVideo: true, start: 0,
                          total: CMTimeGetSeconds(a.duration), rate: 1, art: nil, loopLength: nil)
         }
-        guard let track = player.current, let a = player.avPlayer.currentItem?.asset else { return nil }
+        guard let track = player.current, let a = ClipMaker.ownCopy(player.avPlayer.currentItem?.asset) else { return nil }
         let total = player.clock.duration > 0 ? player.clock.duration : CMTimeGetSeconds(a.duration)
         var start = player.clock.time
         var loop: Double?
@@ -212,8 +225,17 @@ final class ClipMaker: ObservableObject {
             fail("This file can't be cut into a clip (\(error.localizedDescription)).")
             return
         }
-        let src = inp.asset.tracks(withMediaType: .video).first
-        let transform = src?.preferredTransform ?? .identity
+        // Tracks are loaded without blocking the screen (1.5.2: the old synchronous read could
+        // freeze the app on a file still being read).
+        let src = (try? await inp.asset.loadTracks(withMediaType: .video))?.first
+        var transform = CGAffineTransform.identity
+        var natural = CGSize(width: 1080, height: 1080)
+        var rateF: Float = 30
+        if let src, let v = try? await src.load(.preferredTransform, .naturalSize, .nominalFrameRate) {
+            transform = v.0
+            natural = v.1
+            rateF = v.2
+        }
         for t in comp.tracks(withMediaType: .video) { t.preferredTransform = transform }
         if abs(rate - 1) > 0.001 {
             comp.scaleTimeRange(CMTimeRange(start: .zero, duration: comp.duration),
@@ -221,41 +243,11 @@ final class ClipMaker: ObservableObject {
         }
         let soundOnly = !inp.isVideo && o.soundOnly
         // Songs: a song card. Its sound is made first (as a sound-only clip), then every picture
-        // is drawn and written straight into the MP4 with that sound (1.5.1). 1.5.0 painted on a
-        // black video inside the composition, which iOS refused (OSStatus -16976 / -12780).
+        // is drawn and written straight into the MP4 with that sound (1.5.1).
         let card = !inp.isVideo && !soundOnly
         var target = target
         let length = CMTimeGetSeconds(comp.duration)
-
-        var videoComposition: AVMutableVideoComposition?
-        var shape = "sound only"
-        var cardPlan: (painter: ClipPainter, render: CGSize)?
-        if card {
-            let render = ClipOptions.renderSize(source: CGSize(width: 1080, height: 1080), size: o.size, quality: o.quality, target: target)
-            let painter = ClipPainter(render: render, framing: o.framing, look: o.look, natural: render, orientation: nil,
-                                      overlay: ClipPainter.overlay(size: render, options: o, title: inp.title, artist: inp.artist, card: true),
-                                      fade: o.fade, total: length, art: ClipPainter.artImage(inp.art), cardStyle: o.cardStyle)
-            cardPlan = (painter, render)
-            shape = "\(Int(render.width))x\(Int(render.height)) song card"
-        } else if !soundOnly {
-            let natural = src?.naturalSize ?? CGSize(width: 1080, height: 1080)
-            let turned = natural.applying(transform)
-            let sourceSize = CGSize(width: abs(turned.width), height: abs(turned.height))
-            let render = ClipOptions.renderSize(source: sourceSize, size: o.size, quality: o.quality, target: target)
-            let rateF = src?.nominalFrameRate ?? 30
-            let fps = Int32(min(Float(60), max(Float(24), rateF.rounded())))
-            let painter = ClipPainter(render: render, framing: o.framing, look: o.look, natural: natural,
-                                      orientation: ClipPainter.orientation(of: transform),
-                                      overlay: ClipPainter.overlay(size: render, options: o, title: inp.title, artist: inp.artist, card: false),
-                                      fade: o.fade, total: length, art: nil)
-            let vc = AVMutableVideoComposition(asset: comp) { req in
-                req.finish(with: painter.frame(req.sourceImage, t: CMTimeGetSeconds(req.compositionTime)), context: nil)
-            }
-            vc.renderSize = render
-            vc.frameDuration = CMTime(value: 1, timescale: fps)
-            videoComposition = vc
-            shape = "\(Int(render.width))x\(Int(render.height))"
-        }
+        let pitch: AVAudioTimePitchAlgorithm = o.speed > 0 ? (o.keepPitch ? .spectral : .varispeed) : player.pitchAlgorithm
 
         var mix: AVMutableAudioMix?
         if o.fade, length > 1 {
@@ -270,31 +262,147 @@ final class ClipMaker: ObservableObject {
             mix = m
         }
 
-        let asSound = soundOnly || card
-        let preset = asSound ? AVAssetExportPresetAppleM4A : AVAssetExportPresetHighestQuality
-        guard let s = AVAssetExportSession(asset: comp, presetName: preset) else {
+        if !card && !soundOnly && !comp.tracks(withMediaType: .video).isEmpty {
+            // Videos (1.5.2): every picture is painted in Loop Player and written into the MP4 by
+            // Loop Player itself. 1.5.0/1.5.1 handed the painting to an export session (a Core Image
+            // video composition), which crashed iOS's media service on the iPhone ("Cannot Complete
+            // Action", AVFoundationErrorDomain -11819 / OSStatus -16978) or never finished.
+            let turned = natural.applying(transform)
+            let sourceSize = CGSize(width: abs(turned.width), height: abs(turned.height))
+            let render = ClipOptions.renderSize(source: sourceSize, size: o.size, quality: o.quality, target: target)
+            let fps = Int32(min(Float(60), max(Float(24), rateF.rounded())))
+            let painter = ClipPainter(render: render, framing: o.framing, look: o.look, natural: natural,
+                                      orientation: ClipPainter.orientation(of: transform),
+                                      overlay: ClipPainter.overlay(size: render, options: o, title: inp.title, artist: inp.artist, card: false),
+                                      fade: o.fade, total: length, art: nil)
+            let mp4 = ClipMaker.newFile(inp.title, ext: "mp4")
+            FolderLog.append("Clip: \(Int(length)) s of \(inp.title) from \(Int(start)) s, \(Int(render.width))x\(Int(render.height))"
+                             + (abs(rate - 1) > 0.001 ? ", \(String(format: "%.2f", rate))x" : "")
+                             + (reps > 1 ? ", looped \(reps)x" : "") + (o.look == .none ? "" : ", \(o.look.title)"))
+            let stop = StopFlag()
+            cardStop = stop
+            do {
+                try await ClipMaker.renderVideo(comp, natural: natural, mix: mix, pitch: pitch, painter: painter, render: render,
+                                                fps: fps, length: length, to: mp4, stop: stop) { p in
+                    Task { @MainActor in if self.progress != nil { self.progress = p } }
+                }
+                cardStop = nil
+                progress = nil
+                finished(mp4, isPhoto: false, to: target)
+                return
+            } catch {
+                cardStop = nil
+                try? FileManager.default.removeItem(at: mp4)
+                if stop.stop {
+                    progress = nil
+                    return
+                }
+                FolderLog.append("Clip: the painted clip couldn't be made (\(ClipMaker.explain(error))); making a plain clip")
+                if ProcessInfo.processInfo.environment["TEST_CLIP_OUT"] != nil {
+                    fail("painted clip: \(ClipMaker.explain(error))")
+                    return
+                }
+            }
+            // Plain clip, the 1.4.4 way (no painting): the right part, speed and loops, the
+            // picture as it is. Worked on the iPhone before Clip Studio.
+            progress = 0
+            let preset = target == .snapchat ? AVAssetExportPreset1280x720 : AVAssetExportPreset1920x1080
+            guard let s = AVAssetExportSession(asset: comp, presetName: preset) ?? AVAssetExportSession(asset: comp, presetName: AVAssetExportPresetHighestQuality) else {
+                fail("This file can't be cut into a clip.")
+                return
+            }
+            let type: AVFileType = s.supportedFileTypes.contains(.mp4) ? .mp4 : .mov
+            let out = ClipMaker.newFile(inp.title, ext: type == .mp4 ? "mp4" : "mov")
+            s.outputURL = out
+            s.outputFileType = type
+            s.audioMix = mix
+            s.audioTimePitchAlgorithm = pitch
+            s.shouldOptimizeForNetworkUse = true
+            await runExport(s, share: 1)
+            return
+        }
+
+        // Sound only, or the sound of a song card.
+        guard let s = AVAssetExportSession(asset: comp, presetName: AVAssetExportPresetAppleM4A) else {
             fail("This file can't be cut into a clip.")
             return
         }
-        let type: AVFileType = asSound ? .m4a : (s.supportedFileTypes.contains(.mp4) ? .mp4 : .mov)
         let out = card ? FileManager.default.temporaryDirectory.appendingPathComponent("card-sound-\(UUID().uuidString).m4a")
-            : ClipMaker.newFile(inp.title, ext: type == .mp4 ? "mp4" : (type == .mov ? "mov" : "m4a"))
+            : ClipMaker.newFile(inp.title, ext: "m4a")
         s.outputURL = out
-        s.outputFileType = type
-        s.videoComposition = videoComposition
+        s.outputFileType = .m4a
         s.audioMix = mix
-        s.audioTimePitchAlgorithm = o.speed > 0 ? (o.keepPitch ? .spectral : .varispeed) : player.pitchAlgorithm
-        s.shouldOptimizeForNetworkUse = true
-        session = s
-        FolderLog.append("Clip: \(Int(length)) s of \(inp.title) from \(Int(start)) s, \(shape)"
+        s.audioTimePitchAlgorithm = pitch
+        var render = CGSize.zero
+        var cardPainter: ClipPainter?
+        if card {
+            render = ClipOptions.renderSize(source: CGSize(width: 1080, height: 1080), size: o.size, quality: o.quality, target: target)
+            cardPainter = ClipPainter(render: render, framing: o.framing, look: o.look, natural: render, orientation: nil,
+                                      overlay: ClipPainter.overlay(size: render, options: o, title: inp.title, artist: inp.artist, card: true),
+                                      fade: o.fade, total: length, art: ClipPainter.artImage(inp.art), cardStyle: o.cardStyle)
+        }
+        FolderLog.append("Clip: \(Int(length)) s of \(inp.title) from \(Int(start)) s, "
+                         + (card ? "\(Int(render.width))x\(Int(render.height)) song card" : "sound only")
                          + (abs(rate - 1) > 0.001 ? ", \(String(format: "%.2f", rate))x" : "")
-                         + (reps > 1 ? ", looped \(reps)x" : "") + (o.look == .none ? "" : ", \(o.look.title)")
-                         + (card ? ", song card" : ""))
+                         + (reps > 1 ? ", looped \(reps)x" : ""))
+        guard let painter = cardPainter else {
+            await runExport(s, share: 1)
+            return
+        }
+        guard await runExport(s, share: 0.2, finish: false) else { return }
+        let mp4 = ClipMaker.newFile(inp.title, ext: "mp4")
+        let stop = StopFlag()
+        cardStop = stop
+        progress = 0.2
+        do {
+            try await ClipMaker.renderCard(sound: out, painter: painter, render: render, fps: 30, to: mp4, stop: stop) { p in
+                Task { @MainActor in if self.progress != nil { self.progress = 0.2 + 0.8 * p } }
+            }
+            cardStop = nil
+            progress = nil
+            try? FileManager.default.removeItem(at: out)
+            finished(mp4, isPhoto: false, to: target)
+        } catch {
+            cardStop = nil
+            progress = nil
+            try? FileManager.default.removeItem(at: mp4)
+            if stop.stop {
+                try? FileManager.default.removeItem(at: out)
+                return
+            }
+            // The sound still goes out, through Share (Snapchat and Instagram want a picture).
+            FolderLog.append("Clip: song card couldn't be made (\(ClipMaker.explain(error))); sending the sound")
+            if ProcessInfo.processInfo.environment["TEST_CLIP_OUT"] != nil {
+                fail("song card: \(ClipMaker.explain(error))")
+                return
+            }
+            let m4a = ClipMaker.newFile(inp.title, ext: "m4a")
+            try? FileManager.default.moveItem(at: out, to: m4a)
+            if target == .snapchat || target == .instagramStory { target = .share }
+            finished(m4a, isPhoto: false, to: target)
+        }
+    }
 
+    /// Runs an export with a progress bar and a watchdog: an export that doesn't move for 40 s is
+    /// stopped with a clear message instead of hanging forever (1.5.1 could sit at "Making your
+    /// clip…" when iOS's media service died). `finish`: send the file on when done.
+    @discardableResult
+    private func runExport(_ s: AVAssetExportSession, share: Double, finish: Bool = true) async -> Bool {
+        session = s
         let box = SessionBox(s)
+        let stuck = StopFlag()
         let poll = Task { @MainActor in
+            var last: Float = -1
+            var since = Date()
             while !Task.isCancelled {
-                self.progress = Double(box.session.progress) * (card ? 0.2 : 1)
+                let p = box.session.progress
+                if p != last { last = p; since = Date() }
+                else if Date().timeIntervalSince(since) > 40 {
+                    stuck.stop = true
+                    box.session.cancelExport()
+                    return
+                }
+                self.progress = Double(p) * share
                 try? await Task.sleep(nanoseconds: 200_000_000)
             }
         }
@@ -302,47 +410,23 @@ final class ClipMaker: ObservableObject {
             s.exportAsynchronously { c.resume() }
         }
         poll.cancel()
-        progress = nil
         session = nil
-        if box.session.status == .completed, let plan = cardPlan {
-            let mp4 = ClipMaker.newFile(inp.title, ext: "mp4")
-            let stop = StopFlag()
-            cardStop = stop
-            progress = 0.2
-            do {
-                try await ClipMaker.renderCard(sound: out, painter: plan.painter, render: plan.render, fps: 30, to: mp4, stop: stop) { p in
-                    Task { @MainActor in if self.progress != nil { self.progress = 0.2 + 0.8 * p } }
-                }
-                cardStop = nil
+        let out = s.outputURL
+        if box.session.status == .completed {
+            if finish {
                 progress = nil
-                try? FileManager.default.removeItem(at: out)
-                finished(mp4, isPhoto: false, to: target)
-            } catch {
-                cardStop = nil
-                progress = nil
-                try? FileManager.default.removeItem(at: mp4)
-                if stop.stop {
-                    try? FileManager.default.removeItem(at: out)
-                    return
-                }
-                // The sound still goes out, through Share (Snapchat and Instagram want a picture).
-                FolderLog.append("Clip: song card couldn't be made (\(ClipMaker.explain(error))); sending the sound")
-                if ProcessInfo.processInfo.environment["TEST_CLIP_OUT"] != nil {
-                    fail("song card: \(ClipMaker.explain(error))")
-                    return
-                }
-                let m4a = ClipMaker.newFile(inp.title, ext: "m4a")
-                try? FileManager.default.moveItem(at: out, to: m4a)
-                if target == .snapchat || target == .instagramStory { target = .share }
-                finished(m4a, isPhoto: false, to: target)
+                if let out { finished(out, isPhoto: false, to: pendingTarget) }
             }
-        } else if box.session.status == .completed {
-            finished(out, isPhoto: false, to: target)
-        } else if box.session.status == .cancelled {
-            try? FileManager.default.removeItem(at: out)
-        } else {
+            return true
+        }
+        progress = nil
+        if let out { try? FileManager.default.removeItem(at: out) }
+        if stuck.stop {
+            fail("The clip got stuck (iOS stopped answering). Close Loop Player from the app switcher and try again, or try a shorter clip or 720p.")
+        } else if box.session.status != .cancelled {
             fail("The clip couldn't be made: \(box.session.error.map { ClipMaker.explain($0) } ?? "unknown error")")
         }
+        return false
     }
 
     /// A photo in the picked shape and look, as a JPEG.
@@ -383,7 +467,16 @@ final class ClipMaker: ObservableObject {
     }
 
     private func finished(_ out: URL, isPhoto: Bool, to target: ClipTarget) {
-        let r = ClipMaker.describe(out, isPhoto: isPhoto, took: Date().timeIntervalSince(started))
+        let took = Date().timeIntervalSince(started)
+        Task { @MainActor in
+            // Reading the finished file's details can take a moment: not on the main thread (1.5.2).
+            let r = await Task.detached(priority: .userInitiated) { ClipMaker.describe(out, isPhoto: isPhoto, took: took) }.value
+            self.done(r, to: target)
+        }
+    }
+
+    private func done(_ r: ClipResult, to target: ClipTarget) {
+        let out = r.url
         last = r
         FolderLog.append("Clip made: " + r.summary)
         UINotificationFeedbackGenerator().notificationOccurred(.success)
@@ -433,12 +526,15 @@ final class ClipMaker: ObservableObject {
         return .failure(box.session.error ?? NSError(domain: "LoopPlayer", code: 2, userInfo: [NSLocalizedDescriptionKey: "M4A export stopped"]))
     }
 
+    /// One Core Image context for small jobs (a new one each time used a lot of memory).
+    nonisolated static let sharedContext = CIContext(options: [.cacheIntermediates: false])
+
     /// Average brightness 0...1 of a picture (tests: a clip must not come out black).
     nonisolated static func brightness(_ cg: CGImage) -> Double {
         let img = CIImage(cgImage: cg)
         let avg = img.applyingFilter("CIAreaAverage", parameters: [kCIInputExtentKey: CIVector(cgRect: img.extent)])
         var px = [UInt8](repeating: 0, count: 4)
-        CIContext().render(avg, toBitmap: &px, rowBytes: 4, bounds: CGRect(x: avg.extent.minX, y: avg.extent.minY, width: 1, height: 1),
+        sharedContext.render(avg, toBitmap: &px, rowBytes: 4, bounds: CGRect(x: avg.extent.minX, y: avg.extent.minY, width: 1, height: 1),
                            format: .RGBA8, colorSpace: CGColorSpaceCreateDeviceRGB())
         return (Double(px[0]) + Double(px[1]) + Double(px[2])) / (3 * 255)
     }
@@ -541,8 +637,156 @@ final class ClipMaker: ObservableObject {
         if job.appendFailed { FolderLog.append("Clip: some song card pictures were skipped") }
     }
 
+    /// Video clip (1.5.2): the composition's pictures are read one by one (as stored, upright
+    /// turning is the painter's job), painted by `painter` in Loop Player and written with the
+    /// sound (speed, pitch and fades applied while reading) into one MP4. No export session.
+    nonisolated static func renderVideo(_ comp: AVComposition, natural: CGSize, mix: AVAudioMix?, pitch: AVAudioTimePitchAlgorithm,
+                                        painter: ClipPainter, render: CGSize, fps: Int32, length: Double, to out: URL,
+                                        stop: StopFlag, progress: @escaping @Sendable (Double) -> Void) async throws {
+        func failure(_ text: String) -> NSError { NSError(domain: "LoopPlayer", code: 4, userInfo: [NSLocalizedDescriptionKey: text]) }
+        try? FileManager.default.removeItem(at: out)
+        let vTracks = comp.tracks(withMediaType: .video)
+        let aTracks = comp.tracks(withMediaType: .audio)
+        guard let vTrack = vTracks.first, length > 0 else { throw failure("there's no picture to cut") }
+        let reader = try AVAssetReader(asset: comp)
+        reader.timeRange = CMTimeRange(start: .zero, duration: comp.duration)
+
+        // Pictures at the composition's times (speed and loops), in the stored size and turn.
+        let vc = AVMutableVideoComposition()
+        vc.renderSize = CGSize(width: max(2, (natural.width / 2).rounded() * 2), height: max(2, (natural.height / 2).rounded() * 2))
+        vc.frameDuration = CMTime(value: 1, timescale: fps)
+        let instruction = AVMutableVideoCompositionInstruction()
+        instruction.timeRange = CMTimeRange(start: .zero, duration: comp.duration)
+        instruction.layerInstructions = [AVMutableVideoCompositionLayerInstruction(assetTrack: vTrack)]
+        vc.instructions = [instruction]
+        let vOut = AVAssetReaderVideoCompositionOutput(videoTracks: [vTrack], videoSettings: [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+            kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any](),
+        ])
+        vOut.videoComposition = vc
+        vOut.alwaysCopiesSampleData = false
+        guard reader.canAdd(vOut) else { throw failure("the picture can't be read") }
+        reader.add(vOut)
+
+        var aOut: AVAssetReaderAudioMixOutput?
+        if !aTracks.isEmpty {
+            let o = AVAssetReaderAudioMixOutput(audioTracks: aTracks, audioSettings: [
+                AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: 44100, AVNumberOfChannelsKey: 2,
+                AVLinearPCMBitDepthKey: 16, AVLinearPCMIsFloatKey: false, AVLinearPCMIsBigEndianKey: false,
+                AVLinearPCMIsNonInterleaved: false,
+            ])
+            o.audioMix = mix
+            o.audioTimePitchAlgorithm = pitch
+            if reader.canAdd(o) {
+                reader.add(o)
+                aOut = o
+            }
+        }
+
+        let writer = try AVAssetWriter(outputURL: out, fileType: .mp4)
+        writer.shouldOptimizeForNetworkUse = true
+        let w = Int(render.width), h = Int(render.height)
+        let vIn = AVAssetWriterInput(mediaType: .video, outputSettings: [
+            AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: w, AVVideoHeightKey: h,
+            AVVideoCompressionPropertiesKey: [AVVideoAverageBitRateKey: min(40_000_000, w * h * 4),
+                                              AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel],
+        ])
+        vIn.expectsMediaDataInRealTime = false
+        let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: vIn, sourcePixelBufferAttributes: [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+            kCVPixelBufferWidthKey as String: w, kCVPixelBufferHeightKey as String: h,
+            kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any](),
+        ])
+        guard writer.canAdd(vIn) else { throw failure("the video can't be written") }
+        writer.add(vIn)
+        var aIn: AVAssetWriterInput?
+        if aOut != nil {
+            let i = AVAssetWriterInput(mediaType: .audio, outputSettings: [
+                AVFormatIDKey: kAudioFormatMPEG4AAC, AVSampleRateKey: 44100, AVNumberOfChannelsKey: 2, AVEncoderBitRateKey: 192_000,
+            ])
+            i.expectsMediaDataInRealTime = false
+            if writer.canAdd(i) {
+                writer.add(i)
+                aIn = i
+            }
+        }
+        guard reader.startReading() else { throw reader.error ?? failure("the clip can't be read") }
+        guard writer.startWriting() else {
+            reader.cancelReading()
+            throw writer.error ?? failure("the video can't be written")
+        }
+        writer.startSession(atSourceTime: .zero)
+
+        let job = CardJob(frames: 0)
+        let ctx = CIContext(options: [.cacheIntermediates: false])
+        let space = CGColorSpaceCreateDeviceRGB()
+        let rect = CGRect(origin: .zero, size: render)
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            let group = DispatchGroup()
+            group.enter()
+            vIn.requestMediaDataWhenReady(on: DispatchQueue(label: "loopplayer.clip.video")) {
+                while vIn.isReadyForMoreMediaData && !job.videoDone {
+                    var done = stop.stop || writer.status == .failed || reader.status == .failed
+                    if !done {
+                        autoreleasepool {
+                            guard let sample = vOut.copyNextSampleBuffer() else { done = true; return }
+                            let time = CMSampleBufferGetPresentationTimeStamp(sample)
+                            guard let src = CMSampleBufferGetImageBuffer(sample) else { return }
+                            var pb: CVPixelBuffer?
+                            if let pool = adaptor.pixelBufferPool { CVPixelBufferPoolCreatePixelBuffer(nil, pool, &pb) }
+                            guard let pb else { job.appendFailed = true; return }
+                            let t = CMTimeGetSeconds(time)
+                            ctx.render(painter.frame(CIImage(cvPixelBuffer: src), t: t), to: pb, bounds: rect, colorSpace: space)
+                            if !adaptor.append(pb, withPresentationTime: time) { job.appendFailed = true }
+                            job.frame += 1
+                            if job.frame % 10 == 0 { progress(min(1, max(0, t / length))) }
+                        }
+                    }
+                    if done {
+                        vIn.markAsFinished()
+                        job.videoDone = true
+                        group.leave()
+                        return
+                    }
+                }
+            }
+            if let aIn, let aOut {
+                group.enter()
+                aIn.requestMediaDataWhenReady(on: DispatchQueue(label: "loopplayer.clip.audio")) {
+                    while aIn.isReadyForMoreMediaData && !job.audioDone {
+                        if !stop.stop, writer.status != .failed, reader.status != .failed, let sample = aOut.copyNextSampleBuffer() {
+                            aIn.append(sample)
+                        } else {
+                            aIn.markAsFinished()
+                            job.audioDone = true
+                            group.leave()
+                            return
+                        }
+                    }
+                }
+            }
+            group.notify(queue: .global()) { c.resume() }
+        }
+        if stop.stop {
+            writer.cancelWriting()
+            reader.cancelReading()
+            throw CancellationError()
+        }
+        if reader.status == .failed {
+            writer.cancelWriting()
+            throw reader.error ?? failure("the clip couldn't be read")
+        }
+        if job.frame == 0 {
+            writer.cancelWriting()
+            throw failure("no pictures came out")
+        }
+        await writer.finishWriting()
+        if writer.status != .completed { throw writer.error ?? failure("the video couldn't be finished") }
+        if job.appendFailed { FolderLog.append("Clip: some pictures were skipped") }
+    }
+
     /// The details of a finished clip: for checking what Snapchat and Instagram are given.
-    static func describe(_ file: URL, isPhoto: Bool, took: Double) -> ClipResult {
+    nonisolated static func describe(_ file: URL, isPhoto: Bool, took: Double) -> ClipResult {
         let bytes = (try? FileManager.default.attributesOfItem(atPath: file.path)[.size] as? Int) ?? 0
         let mb = ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
         var rows: [ClipInfoRow] = []
@@ -569,7 +813,7 @@ final class ClipMaker: ObservableObject {
         return ClipResult(url: file, isPhoto: isPhoto, rows: rows)
     }
 
-    private static func codec(_ t: AVAssetTrack) -> String {
+    nonisolated private static func codec(_ t: AVAssetTrack) -> String {
         guard let first = t.formatDescriptions.first else { return "?" }
         let fd = first as! CMFormatDescription
         let c = CMFormatDescriptionGetMediaSubType(fd)
@@ -619,7 +863,11 @@ final class ClipMaker: ObservableObject {
     /// Instagram's "Share to Stories": the video (or photo) goes on the pasteboard for Instagram
     /// only (for 5 minutes) and Instagram opens its story editor with it. Nothing goes to Photos.
     private func toInstagramStory(_ file: URL, photo: Bool) {
-        guard let data = try? Data(contentsOf: file) else {
+        guard ClipMaker.smallEnough(file, for: "Instagram") else {
+            error = "This clip is too big for Instagram Stories (over 100 MB). Pick 720p or a shorter length, or use Share."
+            return
+        }
+        guard let data = try? Data(contentsOf: file, options: .uncached) else {
             error = "The clip couldn't be read."
             return
         }
@@ -645,6 +893,10 @@ final class ClipMaker: ObservableObject {
     /// goes on the pasteboard for Snapchat (5 minutes) and Snapchat opens its snap editor with it,
     /// as a fresh snap ("Snapchat pasted from Loop Player"), not a Camera Roll upload.
     private func toSnapchat(_ file: URL, photo: Bool) {
+        guard ClipMaker.smallEnough(file, for: "Snapchat") else {
+            error = "This clip is too big for Snapchat (over 100 MB). Pick 720p or a shorter length, or use Share."
+            return
+        }
         guard let data = try? Data(contentsOf: file, options: .uncached) else {
             error = "The clip couldn't be read."
             return
@@ -669,11 +921,35 @@ final class ClipMaker: ObservableObject {
         }
     }
 
-    private func share(_ file: URL) {
+    /// Clips handed to other apps through the pasteboard are read into memory whole: very big
+    /// ones made Loop Player run out of memory and close.
+    static func smallEnough(_ file: URL, for app: String) -> Bool {
+        let bytes = (try? FileManager.default.attributesOfItem(atPath: file.path)[.size] as? Int) ?? 0
+        if bytes > 100 * 1024 * 1024 {
+            FolderLog.append("Clip: \(bytes / 1_048_576) MB is too big for \(app)")
+            return false
+        }
+        return true
+    }
+
+    private func share(_ file: URL, attempt: Int = 0) {
+        // An alert or sheet still closing can't present the share sheet (it never showed: 1.5.1).
+        if let top = ClipMaker.topViewController(), top.isBeingDismissed || top.isBeingPresented || top is UIAlertController, attempt < 10 {
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                self.share(file, attempt: attempt + 1)
+            }
+            return
+        }
         let sheet = UIActivityViewController(activityItems: [file], applicationActivities: nil)
-        guard let top = ClipMaker.topViewController() else { return }
+        guard let top = ClipMaker.topViewController() else {
+            FolderLog.append("Clip share: no screen to show it on")
+            error = "The share sheet couldn't open. The clip is in Clip Studio > Recent clips."
+            return
+        }
         sheet.popoverPresentationController?.sourceView = top.view
         sheet.popoverPresentationController?.sourceRect = CGRect(x: top.view.bounds.midX, y: top.view.bounds.maxY - 60, width: 1, height: 1)
+        FolderLog.append("Clip share: opening the share sheet")
         sheet.completionWithItemsHandler = { activity, done, _, err in
             if let err { FolderLog.append("Clip share failed: \(err.localizedDescription)") }
             else if done { FolderLog.append("Clip shared to \(activity?.rawValue ?? "?")") }
@@ -746,6 +1022,14 @@ final class ClipMaker: ObservableObject {
         while let next = top?.presentedViewController { top = next }
         return top
     }
+}
+
+/// Opens Clip Studio from the main screen. Its own object (1.5.2): the main screen used to watch
+/// ClipMaker and redrew everything, sheets included, five times a second while a clip was made.
+@MainActor
+final class ClipStudioRouter: ObservableObject {
+    static let shared = ClipStudioRouter()
+    @Published var open = false
 }
 
 /// Lets the export session cross into the progress task.

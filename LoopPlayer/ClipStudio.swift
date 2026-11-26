@@ -516,7 +516,7 @@ enum ClipStudioPreview {
             guard let t = player.current else { return nil }
             title = t.title
             artist = t.artist
-            if t.isVideo, let a = player.avPlayer.currentItem?.asset {
+            if t.isVideo, let a = ClipMaker.ownCopy(player.avPlayer.currentItem?.asset) {
                 var at = player.clock.time
                 if o.start == .beginning { at = 0 } else if o.start == .loop, let la = player.loopA { at = la }
                 // The middle of the clip (song videos often open on black).
@@ -550,15 +550,17 @@ enum ClipStudioPreview {
         return (out, full)
     }
 
-    private static func frame(of asset: AVAsset, at seconds: Double) async -> CIImage? {
+    /// Off the main thread (1.5.2: the brightness checks ran on it and made Clip Studio stall).
+    nonisolated private static func frame(of asset: AVAsset, at seconds: Double) async -> CIImage? {
         let g = AVAssetImageGenerator(asset: asset)
         g.appliesPreferredTrackTransform = true
-        g.maximumSize = CGSize(width: 1280, height: 1280)
+        g.maximumSize = CGSize(width: 960, height: 960)
         g.requestedTimeToleranceBefore = CMTime(seconds: 1, preferredTimescale: 600)
         g.requestedTimeToleranceAfter = CMTime(seconds: 1, preferredTimescale: 600)
         // The asked moment, else a little later or earlier: the first one that isn't (nearly) black.
         var best: (CGImage, Double)?
         for t in [seconds, seconds + 3, seconds + 8, max(0, seconds - 5), 1] {
+            if Task.isCancelled { return nil }
             guard let cg = try? await g.image(at: CMTime(seconds: max(0, t), preferredTimescale: 600)).image else { continue }
             let light = ClipMaker.brightness(cg)
             if light > 0.09 { return CIImage(cgImage: cg) }

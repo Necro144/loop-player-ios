@@ -431,7 +431,6 @@ struct SunoSignInView: View {
                 ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } }
             }
         }
-        .preferredColorScheme(Theme.scheme)
         // Swiping down must not fight with scrolling and tapping on Suno's page.
         .interactiveDismissDisabled()
     }

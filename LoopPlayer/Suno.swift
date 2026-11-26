@@ -514,7 +514,6 @@ struct SunoLinkSheet: View {
                 SunoSignInView().environmentObject(SunoAuth.shared)
             }
         }
-        .preferredColorScheme(Theme.scheme)
     }
 
     private func go() {

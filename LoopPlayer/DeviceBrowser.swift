@@ -55,7 +55,6 @@ struct PhoneBrowserView: View {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
             }
         }
-        .preferredColorScheme(Theme.scheme)
     }
 
     private func use(_ url: URL) {

@@ -251,7 +251,6 @@ struct SpotifyImportSheet: View {
                 if link.isEmpty, let s = UIPasteboard.general.string, SpotifyStore.parse(s) != nil { link = s }
             }
         }
-        .preferredColorScheme(Theme.scheme)
     }
 }
 

@@ -500,7 +500,6 @@ struct PlaylistPickerView: View {
             }
         }
         .presentationDetents([.medium, .large])
-        .preferredColorScheme(Theme.scheme)
     }
 }
 
@@ -561,7 +560,6 @@ struct TrackInfoView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
         }
-        .preferredColorScheme(Theme.scheme)
     }
 
     private func row(_ k: String, _ v: String) -> some View {

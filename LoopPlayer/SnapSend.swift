@@ -31,10 +31,28 @@ struct SnapSendView: View {
     @State private var importing = false
     @State private var loading = false
     @AppStorage("snapSendSeconds") private var seconds: Double = 15
+    /// Photos go onto Snapchat's camera as a sticker: the snap is taken in Snapchat (a real snap).
+    @AppStorage("snapCameraMode") private var cameraMode = true
 
     var body: some View {
         NavigationStack {
             List {
+                Section {
+                    Button { maker.songToSnapchatCamera() } label: {
+                        row("Song sticker on the camera", player.current.map { "\($0.title): take the snap in Snapchat" } ?? "Play a song first", "music.note.list")
+                    }
+                    .disabled(player.current == nil)
+                    .accessibilityIdentifier("snap-sticker")
+                    Toggle(isOn: $cameraMode) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Photos as real snaps")
+                            Text("A picked photo goes onto Snapchat's camera as a sticker").font(.caption).foregroundColor(Theme.dim)
+                        }
+                    }
+                    .tint(Theme.accent)
+                } header: { Text("Real snap (Snapchat's camera)") } footer: {
+                    Text("Snapchat marks every photo or video another app sends as \"Media Upload\". A snap only shows as yours when it's taken with Snapchat's camera, so here Loop Player puts the song (or your photo) on Snapchat's camera as a sticker: move or resize it, then take the photo or video in Snapchat.")
+                }
                 Section {
                     PhotosPicker(selection: $pick, matching: .any(of: [.images, .videos]), photoLibrary: .shared()) {
                         row("From Photos", loading ? "Loading…" : "A photo or video, sent as a fresh snap", "photo.on.rectangle.angled")
@@ -45,7 +63,7 @@ struct SnapSendView: View {
                     }
                     .accessibilityIdentifier("snap-files")
                 } header: { Text("Send a file") } footer: {
-                    Text("Videos longer than 60 seconds are cut to their first 60 seconds (Snapchat's limit).")
+                    Text("Videos are sent as they are (Snapchat shows them as Media Upload); longer than 60 seconds are cut to their first 60 seconds.")
                 }
                 Section {
                     Button { sendNowPlaying() } label: {
@@ -72,7 +90,6 @@ struct SnapSendView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
         }
-        .preferredColorScheme(Theme.scheme)
         .overlay { ClipProgressOverlay(inStudio: false) }
         .onChange(of: pick) { item in load(item) }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.movie, .image], allowsMultipleSelection: false) { r in
@@ -134,6 +151,9 @@ struct SnapSendView: View {
             let d = CMTimeGetSeconds(AVURLAsset(url: file).duration)
             o.seconds = d.isFinite && d > 0 ? min(60, d) : 60
             maker.source = .video(file)
+        } else if cameraMode {
+            maker.photoToSnapchatCamera(file)
+            return
         } else {
             maker.source = .photo(file)
         }

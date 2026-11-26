@@ -73,7 +73,6 @@ struct ClipStudioView: View {
             }
             .safeAreaInset(edge: .bottom) { sendBar }
         }
-        .preferredColorScheme(Theme.scheme)
         .overlay { ClipProgressOverlay(inStudio: true) }
         .onAppear {
             maker.studioShown = true
@@ -384,7 +383,12 @@ struct ClipStudioView: View {
                     }
                 }
             }
-        } header: { Text("Recent clips") } footer: { Text("The last 12 clips are kept so you can send them again.") }
+            Button(role: .destructive) {
+                _ = ClipMaker.clearRecent()
+                recent = ClipMaker.recentClips()
+                resultPlayer = nil
+            } label: { Label("Clear recent clips", systemImage: "trash") }
+        } header: { Text("Recent clips") } footer: { Text("The last 12 clips are kept so you can send them again. Also in Settings > Library.") }
     }
 
     private func fileSize(_ u: URL) -> String {

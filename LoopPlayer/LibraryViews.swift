@@ -820,7 +820,6 @@ struct SongPickerView: View {
                 }
             }
         }
-        .preferredColorScheme(Theme.scheme)
     }
 }
 
@@ -845,6 +844,8 @@ struct SettingsView: View {
     @AppStorage("appTheme") private var themeName = AppTheme.black.rawValue
     @AppStorage("appAccent") private var accentName = AccentChoice.pink.rawValue
     @State private var paintCheck: [String]?
+    @State private var confirmRecent = false
+    @State private var recentResult: String?
 
     var body: some View {
         List {
@@ -854,6 +855,7 @@ struct SettingsView: View {
                 }
                 .pickerStyle(.segmented)
                 .accessibilityIdentifier("theme-picker")
+                .onChange(of: themeName) { _ in Theme.applyWindow() }
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 12) {
                         ForEach(AccentChoice.allCases) { a in
@@ -935,6 +937,14 @@ struct SettingsView: View {
                     }
                 }
                 .disabled(clearing)
+                Button { confirmRecent = true } label: {
+                    HStack {
+                        Label("Clear Recent Clips", systemImage: "film.stack")
+                        Spacer()
+                        Text(recentResult ?? "\(ClipMaker.recentClips().count) · \(ClipMaker.recentSize)").font(.caption).foregroundColor(Theme.dim)
+                    }
+                }
+                .accessibilityIdentifier("clear-recent")
             }
 
             Section {
@@ -1073,6 +1083,9 @@ struct SettingsView: View {
                     cacheResult = "Cleared \(freed)"
                 }
             }
+        }
+        .confirmationDialog("Delete the recent clips and photos made in Clip Studio? Your songs and videos stay.", isPresented: $confirmRecent, titleVisibility: .visible) {
+            Button("Clear Recent Clips", role: .destructive) { recentResult = "Cleared " + ClipMaker.clearRecent() }
         }
         .alert("Lock Screen Check", isPresented: Binding(get: { lockReport != nil }, set: { if !$0 { lockReport = nil } })) {
             Button("OK", role: .cancel) {}

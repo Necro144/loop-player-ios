@@ -37,7 +37,8 @@ struct NowPlayingView: View {
                 }
             }
         }
-        .preferredColorScheme(.dark)
+        // Always dark (artwork behind it), only here: preferredColorScheme changed the whole app.
+        .environment(\.colorScheme, .dark)
         .presentationDragIndicator(.visible)
         .sheet(isPresented: $showQueue) { QueueView() }
         .sheet(isPresented: $showSpeed) { SpeedSheet() }
@@ -379,7 +380,6 @@ struct SpeedSheet: View {
             }
         }
         .presentationDetents([.medium, .large])
-        .preferredColorScheme(Theme.scheme)
         .onAppear { value = player.rate }
     }
 
@@ -557,7 +557,6 @@ struct QueueView: View {
             }
         }
         .presentationDetents([.medium, .large])
-        .preferredColorScheme(Theme.scheme)
     }
 
     private func modeButton(_ icon: String, on: Bool, action: @escaping () -> Void) -> some View {

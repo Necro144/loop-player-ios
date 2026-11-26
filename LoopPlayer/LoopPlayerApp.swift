@@ -70,6 +70,22 @@ enum Theme {
     static var gradient: LinearGradient { LinearGradient(colors: [accent, accent2], startPoint: .topLeading, endPoint: .bottomTrailing) }
     static var snapYellow: Color { Color(dyn(black: UIColor(red: 1, green: 0.99, blue: 0, alpha: 1), dark: UIColor(red: 1, green: 0.99, blue: 0, alpha: 1), light: UIColor(red: 0.85, green: 0.68, blue: 0, alpha: 1))) }
 
+    /// Light or dark for the whole app, set on the windows themselves (1.5.5). SwiftUI's
+    /// preferredColorScheme stayed dark after the full player (always dark) had been open, so
+    /// System didn't follow the iPhone any more.
+    @MainActor static func applyWindow() {
+        let style: UIUserInterfaceStyle
+        switch mode {
+        case .system: style = .unspecified
+        case .light: style = .light
+        case .dark, .black: style = .dark
+        }
+        for scene in UIApplication.shared.connectedScenes {
+            guard let ws = scene as? UIWindowScene else { continue }
+            for w in ws.windows where w.overrideUserInterfaceStyle != style { w.overrideUserInterfaceStyle = style }
+        }
+    }
+
     /// UIKit bars in the chosen theme.
     static func applyBars() {
         let tab = UITabBarAppearance()
@@ -146,7 +162,6 @@ struct LoopPlayerApp: App {
                 .environmentObject(YouTubeStore.shared)
                 .environmentObject(SpotifyStore.shared)
                 .environmentObject(SunoStore.shared)
-                .preferredColorScheme(Theme.scheme)
                 .tint(Theme.accent)
                 // A new theme or colour redraws every screen at once.
                 .id(themeName + "-" + accentName)
@@ -206,7 +221,11 @@ struct RootView: View {
         } message: {
             Text(library.message ?? "")
         }
-        .onAppear { TestHooks.run() }
+        .onAppear {
+            Theme.applyWindow()
+            TestHooks.run()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in Theme.applyWindow() }
     }
 }
 
@@ -422,6 +441,10 @@ enum TestHooks {
                         ClipMaker.shared.source = .photo(u)
                     }
                     ClipMaker.shared.make(o, to: .share)
+                }
+                if env["TEST_STICKER_OUT"] != nil {
+                    try? await Task.sleep(nanoseconds: 3_000_000_000)
+                    ClipMaker.shared.songToSnapchatCamera()
                 }
                 if env["TEST_STUDIO"] == "1" {
                     try? await Task.sleep(nanoseconds: 3_000_000_000)

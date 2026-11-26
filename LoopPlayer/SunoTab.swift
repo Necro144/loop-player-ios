@@ -519,7 +519,6 @@ private struct SunoPopupSheet: View {
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { close() } } }
         }
-        .preferredColorScheme(Theme.scheme)
     }
 }
 

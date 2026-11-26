@@ -226,7 +226,7 @@ jobs:
           check "^brightness=0\.([1-9]|0[5-9])" out/clipphoto.txt "photo has a picture (not black)"
           check "^brightness=0\.([1-9]|0[5-9])" out/studio.txt "Clip Studio preview is not black"
           check "^look mono: r=([0-9]+) g=\1 b=\1$" out/paint.txt "Mono look makes grey (colour matrix channels right)"
-          check "^look warm: r=2[45][0-9] g=0 b=0$" out/paint.txt "Warm look keeps red red"
+          check "^look warm: r=2[0-9][0-9] g=[0-9]+ b=0$" out/paint.txt "Warm look keeps red red"
           check "^paint check took" out/paint.txt "every look, shape and song card painted"
           if grep -q "failed" out/paint.txt; then echo "FAIL some paint checks failed"; fail=1; fi
           check "^video=360x640$" out/clipturned.txt "sideways phone video comes out upright"

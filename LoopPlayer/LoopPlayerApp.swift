@@ -68,7 +68,7 @@ enum Theme {
     static var dim: Color { Color(dyn(black: UIColor(white: 1, alpha: 0.55), dark: UIColor(white: 1, alpha: 0.58), light: UIColor(white: 0, alpha: 0.5))) }
     static var faint: Color { Color(dyn(black: UIColor(white: 1, alpha: 0.5), dark: UIColor(white: 1, alpha: 0.5), light: UIColor(white: 0, alpha: 0.42))) }
     static var gradient: LinearGradient { LinearGradient(colors: [accent, accent2], startPoint: .topLeading, endPoint: .bottomTrailing) }
-    static let snapYellow = Color(red: 1, green: 0.99, blue: 0)
+    static var snapYellow: Color { Color(dyn(black: UIColor(red: 1, green: 0.99, blue: 0, alpha: 1), dark: UIColor(red: 1, green: 0.99, blue: 0, alpha: 1), light: UIColor(red: 0.85, green: 0.68, blue: 0, alpha: 1))) }
 
     /// UIKit bars in the chosen theme.
     static func applyBars() {

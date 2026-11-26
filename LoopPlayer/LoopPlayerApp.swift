@@ -2,15 +2,94 @@ import SwiftUI
 import UIKit
 import MediaPlayer
 
+/// How the app looks (1.5.4): System follows the iPhone, Black is the old pure black look.
+enum AppTheme: String, CaseIterable, Identifiable {
+    case system, light, dark, black
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .system: return "System"
+        case .light: return "Light"
+        case .dark: return "Dark"
+        case .black: return "Black"
+        }
+    }
+}
+
+/// The colour of buttons, the playing song and highlights.
+enum AccentChoice: String, CaseIterable, Identifiable {
+    case pink, red, orange, yellow, green, mint, teal, blue, indigo, purple
+    var id: String { rawValue }
+    var title: String { rawValue.capitalized }
+    var pair: (UIColor, UIColor) {
+        func c(_ r: CGFloat, _ g: CGFloat, _ b: CGFloat) -> UIColor { UIColor(red: r, green: g, blue: b, alpha: 1) }
+        switch self {
+        case .pink: return (c(1, 0.27, 0.47), c(1, 0.55, 0.35))
+        case .red: return (c(1, 0.23, 0.19), c(1, 0.45, 0.3))
+        case .orange: return (c(1, 0.58, 0.0), c(1, 0.78, 0.2))
+        case .yellow: return (c(1, 0.8, 0.0), c(1, 0.6, 0.1))
+        case .green: return (c(0.2, 0.8, 0.35), c(0.6, 0.9, 0.2))
+        case .mint: return (c(0.0, 0.78, 0.65), c(0.3, 0.9, 0.8))
+        case .teal: return (c(0.19, 0.69, 0.78), c(0.35, 0.55, 1))
+        case .blue: return (c(0.0, 0.48, 1), c(0.35, 0.35, 1))
+        case .indigo: return (c(0.35, 0.34, 0.84), c(0.6, 0.35, 0.95))
+        case .purple: return (c(0.69, 0.32, 0.87), c(1, 0.35, 0.65))
+        }
+    }
+}
+
 enum Theme {
-    static let bg = Color.black
-    static let surface = Color(red: 0.07, green: 0.07, blue: 0.08)
-    static let surface2 = Color(red: 0.13, green: 0.13, blue: 0.145)
-    static let accent = Color(red: 1.0, green: 0.27, blue: 0.47)
-    static let accent2 = Color(red: 1.0, green: 0.55, blue: 0.35)
-    static let hairline = Color.white.opacity(0.09)
-    static let dim = Color.white.opacity(0.55)
-    static let gradient = LinearGradient(colors: [accent, accent2], startPoint: .topLeading, endPoint: .bottomTrailing)
+    static var mode: AppTheme { AppTheme(rawValue: UserDefaults.standard.string(forKey: "appTheme") ?? "") ?? .black }
+    static var accentChoice: AccentChoice { AccentChoice(rawValue: UserDefaults.standard.string(forKey: "appAccent") ?? "") ?? .pink }
+    /// nil: follow the iPhone.
+    static var scheme: ColorScheme? {
+        switch mode {
+        case .system: return nil
+        case .light: return .light
+        case .dark, .black: return .dark
+        }
+    }
+
+    /// A colour for dark screens (`black` / `dark` theme) and for light ones.
+    static func dyn(black: UIColor, dark: UIColor, light: UIColor) -> UIColor {
+        UIColor { t in
+            guard t.userInterfaceStyle == .dark else { return light }
+            return Theme.mode == .dark ? dark : black
+        }
+    }
+    static var uiBG: UIColor { dyn(black: .black, dark: UIColor(white: 0.11, alpha: 1), light: UIColor(white: 0.97, alpha: 1)) }
+    static var uiBar: UIColor { dyn(black: UIColor(white: 0.035, alpha: 1), dark: UIColor(white: 0.15, alpha: 1), light: .white) }
+    static var bg: Color { Color(uiBG) }
+    static var surface: Color { Color(dyn(black: UIColor(red: 0.07, green: 0.07, blue: 0.08, alpha: 1), dark: UIColor(white: 0.17, alpha: 1), light: .white)) }
+    static var surface2: Color { Color(dyn(black: UIColor(red: 0.13, green: 0.13, blue: 0.145, alpha: 1), dark: UIColor(white: 0.23, alpha: 1), light: UIColor(white: 0.9, alpha: 1))) }
+    static var accent: Color { Color(accentChoice.pair.0) }
+    static var accent2: Color { Color(accentChoice.pair.1) }
+    static var hairline: Color { Color(dyn(black: UIColor(white: 1, alpha: 0.09), dark: UIColor(white: 1, alpha: 0.1), light: UIColor(white: 0, alpha: 0.1))) }
+    static var dim: Color { Color(dyn(black: UIColor(white: 1, alpha: 0.55), dark: UIColor(white: 1, alpha: 0.58), light: UIColor(white: 0, alpha: 0.5))) }
+    static var faint: Color { Color(dyn(black: UIColor(white: 1, alpha: 0.5), dark: UIColor(white: 1, alpha: 0.5), light: UIColor(white: 0, alpha: 0.42))) }
+    static var gradient: LinearGradient { LinearGradient(colors: [accent, accent2], startPoint: .topLeading, endPoint: .bottomTrailing) }
+    static let snapYellow = Color(red: 1, green: 0.99, blue: 0)
+
+    /// UIKit bars in the chosen theme.
+    static func applyBars() {
+        let tab = UITabBarAppearance()
+        tab.configureWithOpaqueBackground()
+        tab.backgroundColor = uiBar
+        tab.shadowColor = dyn(black: UIColor(white: 1, alpha: 0.08), dark: UIColor(white: 1, alpha: 0.08), light: UIColor(white: 0, alpha: 0.1))
+        UITabBar.appearance().standardAppearance = tab
+        UITabBar.appearance().scrollEdgeAppearance = tab
+
+        let nav = UINavigationBarAppearance()
+        nav.configureWithOpaqueBackground()
+        nav.backgroundColor = uiBG
+        nav.shadowColor = .clear
+        nav.titleTextAttributes = [.foregroundColor: UIColor.label]
+        nav.largeTitleTextAttributes = [.foregroundColor: UIColor.label]
+        UINavigationBar.appearance().standardAppearance = nav
+        UINavigationBar.appearance().scrollEdgeAppearance = nav
+        UINavigationBar.appearance().compactAppearance = nav
+        UITableView.appearance().backgroundColor = uiBG
+    }
 }
 
 /// Small piece of shared UI state (sheets started from list rows).
@@ -23,6 +102,7 @@ final class AppUI: ObservableObject {
     @Published var openYouTube: OpenID?
     @Published var showSuno = false
     @Published var showSunoSignIn = false
+    @Published var showSnapSend = false
 }
 
 struct OpenID: Identifiable {
@@ -47,24 +127,13 @@ struct LoopPlayerApp: App {
         FolderLog.append("App started (version \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"))" + (DeviceFolders.available ? ", phone folders readable (TrollStore)" : ""))
         // Put the kept Suno sign-in back into WebKit before anything loads Suno's page.
         Task { @MainActor in await SunoAuth.shared.restoreSession() }
-        let tab = UITabBarAppearance()
-        tab.configureWithOpaqueBackground()
-        tab.backgroundColor = UIColor(white: 0.035, alpha: 1)
-        tab.shadowColor = UIColor(white: 1, alpha: 0.08)
-        UITabBar.appearance().standardAppearance = tab
-        UITabBar.appearance().scrollEdgeAppearance = tab
-
-        let nav = UINavigationBarAppearance()
-        nav.configureWithOpaqueBackground()
-        nav.backgroundColor = .black
-        nav.shadowColor = .clear
-        nav.titleTextAttributes = [.foregroundColor: UIColor.white]
-        nav.largeTitleTextAttributes = [.foregroundColor: UIColor.white]
-        UINavigationBar.appearance().standardAppearance = nav
-        UINavigationBar.appearance().scrollEdgeAppearance = nav
-        UINavigationBar.appearance().compactAppearance = nav
-        UITableView.appearance().backgroundColor = .black
+        if let t = ProcessInfo.processInfo.environment["TEST_THEME"] { UserDefaults.standard.set(t, forKey: "appTheme") }
+        if let a = ProcessInfo.processInfo.environment["TEST_ACCENT"] { UserDefaults.standard.set(a, forKey: "appAccent") }
+        Theme.applyBars()
     }
+
+    @AppStorage("appTheme") private var themeName = AppTheme.black.rawValue
+    @AppStorage("appAccent") private var accentName = AccentChoice.pink.rawValue
 
     var body: some Scene {
         WindowGroup {
@@ -77,8 +146,10 @@ struct LoopPlayerApp: App {
                 .environmentObject(YouTubeStore.shared)
                 .environmentObject(SpotifyStore.shared)
                 .environmentObject(SunoStore.shared)
-                .preferredColorScheme(.dark)
+                .preferredColorScheme(Theme.scheme)
                 .tint(Theme.accent)
+                // A new theme or colour redraws every screen at once.
+                .id(themeName + "-" + accentName)
         }
     }
 }
@@ -122,6 +193,9 @@ struct RootView: View {
         .sheet(isPresented: $ui.showSunoSignIn) {
             SunoSignInView().environmentObject(SunoAuth.shared)
         }
+        .sheet(isPresented: $ui.showSnapSend) {
+            SnapSendView()
+        }
         .sheet(isPresented: $ui.showPhoneBrowser) {
             PhoneBrowserView()
                 .environmentObject(library)
@@ -151,12 +225,12 @@ struct MainTabs: View {
     var body: some View {
         VStack(spacing: 0) {
             ZStack {
-                page(0) { NavigationStack { HomeView() }.withMiniPlayer() }
-                page(1) { NavigationStack { LibraryView() }.withMiniPlayer() }
-                page(2) { NavigationStack { SearchView() }.withMiniPlayer() }
-                page(3) { NavigationStack { PlaylistsView() }.withMiniPlayer() }
+                page(0) { NavigationStack { HomeView().snapButton() }.withMiniPlayer() }
+                page(1) { NavigationStack { LibraryView().snapButton() }.withMiniPlayer() }
+                page(2) { NavigationStack { SearchView().snapButton() }.withMiniPlayer() }
+                page(3) { NavigationStack { PlaylistsView().snapButton() }.withMiniPlayer() }
                 page(MainTabs.sunoTab) { SunoTabView(active: tab == MainTabs.sunoTab).withMiniPlayer() }
-                page(MainTabs.settingsTab) { NavigationStack { SettingsView() }.withMiniPlayer() }
+                page(MainTabs.settingsTab) { NavigationStack { SettingsView().snapButton() }.withMiniPlayer() }
             }
             bar
         }
@@ -192,7 +266,7 @@ struct MainTabs: View {
                     .frame(maxWidth: .infinity)
                     .padding(.top, 7)
                     .padding(.bottom, 2)
-                    .foregroundColor(tab == i ? Theme.accent : Color.white.opacity(0.5))
+                    .foregroundColor(tab == i ? Theme.accent : Theme.faint)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -200,7 +274,7 @@ struct MainTabs: View {
                 .accessibilityAddTraits(tab == i ? [.isSelected] : [])
             }
         }
-        .background(Color(white: 0.035).ignoresSafeArea(edges: .bottom))
+        .background(Color(Theme.uiBar).ignoresSafeArea(edges: .bottom))
         .overlay(alignment: .top) { Rectangle().fill(Theme.hairline).frame(height: 0.5) }
     }
 }
@@ -274,6 +348,16 @@ enum TestHooks {
         guard !done else { return }
         done = true
         let env = ProcessInfo.processInfo.environment
+        if let out = env["TEST_PAINT_OUT"] {
+            try? PaintCheck.run().joined(separator: "
+").write(toFile: out, atomically: true, encoding: .utf8)
+        }
+        if env["TEST_SNAP_SEND"] == "1" {
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                AppUI.shared.showSnapSend = true
+            }
+        }
         if let tab = env["TEST_TAB"], let n = Int(tab) {
             UserDefaults.standard.set(n, forKey: "tab")
             UserDefaults.standard.set(true, forKey: "tabsV13")
@@ -323,6 +407,7 @@ enum TestHooks {
                     if let v = env["TEST_CLIP_CARD"].flatMap(CardStyle.init(rawValue:)) { o.cardStyle = v }
                     if let v = env["TEST_CLIP_CAPTION_PLACE"].flatMap(CaptionPlace.init(rawValue:)) { o.captionPlace = v }
                     if let v = env["TEST_CLIP_CAPTION_COLOR"].flatMap(CaptionColor.init(rawValue:)) { o.captionColor = v }
+                    if let v = env["TEST_CLIP_VIDEO"] { ClipMaker.shared.source = .video(URL(fileURLWithPath: v)) }
                     if env["TEST_CLIP_PHOTO"] == "1" {
                         // A made-up 800x600 photo, as if picked from the library.
                         let f = UIGraphicsImageRendererFormat()

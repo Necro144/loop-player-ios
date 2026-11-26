@@ -379,7 +379,7 @@ struct SpeedSheet: View {
             }
         }
         .presentationDetents([.medium, .large])
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(Theme.scheme)
         .onAppear { value = player.rate }
     }
 
@@ -557,7 +557,7 @@ struct QueueView: View {
             }
         }
         .presentationDetents([.medium, .large])
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(Theme.scheme)
     }
 
     private func modeButton(_ icon: String, on: Bool, action: @escaping () -> Void) -> some View {

@@ -98,7 +98,7 @@ struct TrackRow: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(track.title)
                         .font(.body.weight(isCurrent ? .semibold : .regular))
-                        .foregroundColor(isCurrent ? Theme.accent : .white)
+                        .foregroundColor(isCurrent ? Theme.accent : .primary)
                         .lineLimit(1)
                     HStack(spacing: 4) {
                         if store.isFavorite(track.id) {
@@ -476,7 +476,7 @@ struct PlaylistPickerView: View {
                         HStack {
                             PlaylistCover(playlist: p, size: 44)
                             VStack(alignment: .leading) {
-                                Text(p.name).foregroundColor(.white)
+                                Text(p.name).foregroundColor(.primary)
                                 Text("\(p.trackIDs.count) songs").font(.caption).foregroundColor(Theme.dim)
                             }
                         }
@@ -500,7 +500,7 @@ struct PlaylistPickerView: View {
             }
         }
         .presentationDetents([.medium, .large])
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(Theme.scheme)
     }
 }
 
@@ -561,7 +561,7 @@ struct TrackInfoView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
         }
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(Theme.scheme)
     }
 
     private func row(_ k: String, _ v: String) -> some View {

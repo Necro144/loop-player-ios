@@ -345,7 +345,7 @@ struct YouTubeImportSheet: View {
                 }
             }
         }
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(Theme.scheme)
     }
 }
 
@@ -831,7 +831,7 @@ struct YTLogView: View {
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
             }
         }
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(Theme.scheme)
     }
 }
 

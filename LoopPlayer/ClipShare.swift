@@ -1,6 +1,5 @@
 import SwiftUI
 import AVFoundation
-import CoreImage
 import UIKit
 
 // Share a clip (1.4.0), Clip Studio (1.5.0): a clip of the playing video or song, or a photo or
@@ -284,8 +283,7 @@ final class ClipMaker: ObservableObject {
             let sourceSize = CGSize(width: abs(turned.width), height: abs(turned.height))
             let render = ClipOptions.renderSize(source: sourceSize, size: o.size, quality: o.quality, target: target)
             let fps = Int32(min(Float(60), max(Float(24), rateF.rounded())))
-            let painter = ClipPainter(render: render, framing: o.framing, look: o.look, natural: natural,
-                                      orientation: ClipPainter.orientation(of: transform),
+            let painter = ClipPainter(render: render, framing: o.framing, look: o.look,
                                       overlay: ClipPainter.overlay(size: render, options: o, title: inp.title, artist: inp.artist, card: false),
                                       fade: o.fade, total: length, art: nil)
             let mp4 = ClipMaker.newFile(inp.title, ext: "mp4")
@@ -298,7 +296,7 @@ final class ClipMaker: ObservableObject {
             FileManager.default.createFile(atPath: ClipMaker.paintMarker.path, contents: Data())
             defer { try? FileManager.default.removeItem(at: ClipMaker.paintMarker) }
             do {
-                try await ClipMaker.renderVideo(comp, natural: natural, mix: mix, pitch: pitch, painter: painter, render: render,
+                try await ClipMaker.renderVideo(comp, natural: natural, transform: transform, mix: mix, pitch: pitch, painter: painter, render: render,
                                                 fps: fps, length: length, to: mp4, stop: stop) { p in
                     Task { @MainActor in if self.progress != nil { self.progress = p } }
                 }
@@ -357,7 +355,7 @@ final class ClipMaker: ObservableObject {
         var cardPainter: ClipPainter?
         if card {
             render = ClipOptions.renderSize(source: CGSize(width: 1080, height: 1080), size: o.size, quality: o.quality, target: target)
-            cardPainter = ClipPainter(render: render, framing: o.framing, look: o.look, natural: render, orientation: nil,
+            cardPainter = ClipPainter(render: render, framing: o.framing, look: o.look,
                                       overlay: ClipPainter.overlay(size: render, options: o, title: inp.title, artist: inp.artist, card: true),
                                       fade: o.fade, total: length, art: ClipPainter.artImage(inp.art), cardStyle: o.cardStyle)
         }
@@ -467,13 +465,12 @@ final class ClipMaker: ObservableObject {
             return
         }
         let render = ClipOptions.renderSize(source: size, size: o.size, quality: o.quality == .auto ? .p1080 : o.quality, target: .share)
-        let painter = ClipPainter(render: render, framing: o.framing, look: o.look, natural: size, orientation: nil,
+        let painter = ClipPainter(render: render, framing: o.framing, look: o.look,
                                   overlay: ClipPainter.overlay(size: render, options: o, title: "", artist: "", card: false),
                                   fade: false, total: 0, art: nil)
         let out = ClipMaker.newFile("Photo", ext: "jpg")
         let ok = await Task.detached(priority: .userInitiated) { () -> Bool in
-            let img = painter.frame(CIImage(cgImage: cg), t: 0)
-            guard let rendered = CIContext().createCGImage(img, from: CGRect(origin: .zero, size: render)),
+            guard let rendered = painter.image(cg, t: 0),
                   let jpg = UIImage(cgImage: rendered).jpegData(compressionQuality: 0.92) else { return false }
             return (try? jpg.write(to: out)) != nil
         }.value
@@ -546,17 +543,16 @@ final class ClipMaker: ObservableObject {
         return .failure(box.session.error ?? NSError(domain: "LoopPlayer", code: 2, userInfo: [NSLocalizedDescriptionKey: "M4A export stopped"]))
     }
 
-    /// One Core Image context for small jobs (a new one each time used a lot of memory).
-    nonisolated static let sharedContext = CIContext(options: [.cacheIntermediates: false])
-
-    /// Average brightness 0...1 of a picture (tests: a clip must not come out black).
+    /// Average brightness 0...1 of a picture, measured on an 8x8 copy (tests: a clip must not
+    /// come out black; Clip Studio's preview skips black frames). No Core Image (1.5.4).
     nonisolated static func brightness(_ cg: CGImage) -> Double {
-        let img = CIImage(cgImage: cg)
-        let avg = img.applyingFilter("CIAreaAverage", parameters: [kCIInputExtentKey: CIVector(cgRect: img.extent)])
-        var px = [UInt8](repeating: 0, count: 4)
-        sharedContext.render(avg, toBitmap: &px, rowBytes: 4, bounds: CGRect(x: avg.extent.minX, y: avg.extent.minY, width: 1, height: 1),
-                           format: .RGBA8, colorSpace: CGColorSpaceCreateDeviceRGB())
-        return (Double(px[0]) + Double(px[1]) + Double(px[2])) / (3 * 255)
+        guard let c = ClipPainter.context(8, 8), let data = c.data else { return 1 }
+        c.interpolationQuality = .medium
+        c.draw(cg, in: CGRect(x: 0, y: 0, width: 8, height: 8))
+        let px = data.bindMemory(to: UInt8.self, capacity: c.bytesPerRow * 8)
+        var sum = 0
+        for y in 0..<8 { for x in 0..<8 { let i = y * c.bytesPerRow + x * 4; sum += Int(px[i]) + Int(px[i + 1]) + Int(px[i + 2]) } }
+        return Double(sum) / (64 * 3 * 255)
     }
 
     /// Not async on purpose: from async code Swift picks the newer async insertTimeRange.
@@ -601,9 +597,6 @@ final class ClipMaker: ObservableObject {
 
         let frames = max(1, Int((seconds * Double(fps)).rounded(.up)))
         let job = CardJob(frames: frames)
-        let ctx = CIContext()
-        let space = CGColorSpaceCreateDeviceRGB()
-        let rect = CGRect(origin: .zero, size: render)
         await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
             let group = DispatchGroup()
             group.enter()
@@ -621,7 +614,7 @@ final class ClipMaker: ObservableObject {
                         if let pool = adaptor.pixelBufferPool { CVPixelBufferPoolCreatePixelBuffer(nil, pool, &pb) }
                         if let pb {
                             let t = Double(job.frame) / Double(fps)
-                            ctx.render(painter.frame(CIImage.empty(), t: t), to: pb, bounds: rect, colorSpace: space)
+                            if !painter.paint(nil, t: t, to: pb) { job.appendFailed = true }
                             if !adaptor.append(pb, withPresentationTime: CMTime(value: CMTimeValue(job.frame), timescale: fps)) {
                                 job.appendFailed = true
                             }
@@ -660,7 +653,7 @@ final class ClipMaker: ObservableObject {
     /// Video clip (1.5.2): the composition's pictures are read one by one (as stored, upright
     /// turning is the painter's job), painted by `painter` in Loop Player and written with the
     /// sound (speed, pitch and fades applied while reading) into one MP4. No export session.
-    nonisolated static func renderVideo(_ comp: AVComposition, natural: CGSize, mix: AVAudioMix?, pitch: AVAudioTimePitchAlgorithm,
+    nonisolated static func renderVideo(_ comp: AVComposition, natural: CGSize, transform: CGAffineTransform, mix: AVAudioMix?, pitch: AVAudioTimePitchAlgorithm,
                                         painter: ClipPainter, render: CGSize, fps: Int32, length: Double, to out: URL,
                                         stop: StopFlag, progress: @escaping @Sendable (Double) -> Void) async throws {
         func failure(_ text: String) -> NSError { NSError(domain: "LoopPlayer", code: 4, userInfo: [NSLocalizedDescriptionKey: text]) }
@@ -671,13 +664,17 @@ final class ClipMaker: ObservableObject {
         let reader = try AVAssetReader(asset: comp)
         reader.timeRange = CMTimeRange(start: .zero, duration: comp.duration)
 
-        // Pictures at the composition's times (speed and loops), in the stored size and turn.
+        // Pictures at the composition's times (speed and loops), turned upright by AVFoundation
+        // (1.5.4: the same turning the plain clip uses, which works on the iPhone).
         let vc = AVMutableVideoComposition()
-        vc.renderSize = CGSize(width: max(2, (natural.width / 2).rounded() * 2), height: max(2, (natural.height / 2).rounded() * 2))
+        let up = CGRect(origin: .zero, size: natural).applying(transform)
+        vc.renderSize = CGSize(width: max(2, (abs(up.width) / 2).rounded() * 2), height: max(2, (abs(up.height) / 2).rounded() * 2))
         vc.frameDuration = CMTime(value: 1, timescale: fps)
         let instruction = AVMutableVideoCompositionInstruction()
         instruction.timeRange = CMTimeRange(start: .zero, duration: comp.duration)
-        instruction.layerInstructions = [AVMutableVideoCompositionLayerInstruction(assetTrack: vTrack)]
+        let layer = AVMutableVideoCompositionLayerInstruction(assetTrack: vTrack)
+        layer.setTransform(transform.concatenating(CGAffineTransform(translationX: -up.minX, y: -up.minY)), at: .zero)
+        instruction.layerInstructions = [layer]
         vc.instructions = [instruction]
         let vOut = AVAssetReaderVideoCompositionOutput(videoTracks: [vTrack], videoSettings: [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
@@ -730,7 +727,7 @@ final class ClipMaker: ObservableObject {
                 aIn = i
             }
         }
-        FolderLog.append("Clip step: reading \(Int(natural.width))x\(Int(natural.height)), writing \(w)x\(h) at \(fps) fps" + (aIn == nil ? ", no sound" : ""))
+        FolderLog.append("Clip step: reading \(Int(vc.renderSize.width))x\(Int(vc.renderSize.height)), writing \(w)x\(h) at \(fps) fps" + (aIn == nil ? ", no sound" : ""))
         guard try ClipMaker.objc({ reader.startReading() }) else { throw reader.error ?? failure("the clip can't be read") }
         guard try ClipMaker.objc({ writer.startWriting() }) else {
             reader.cancelReading()
@@ -740,9 +737,6 @@ final class ClipMaker: ObservableObject {
         FolderLog.append("Clip step: reading and writing started")
 
         let job = CardJob(frames: 0)
-        let ctx = CIContext(options: [.cacheIntermediates: false])
-        let space = CGColorSpaceCreateDeviceRGB()
-        let rect = CGRect(origin: .zero, size: render)
         await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
             let group = DispatchGroup()
             group.enter()
@@ -766,7 +760,7 @@ final class ClipMaker: ObservableObject {
                             let t = CMTimeGetSeconds(time)
                             do {
                                 let ok = try ClipMaker.objc { () -> Bool in
-                                    ctx.render(painter.frame(CIImage(cvPixelBuffer: src), t: t), to: pb, bounds: rect, colorSpace: space)
+                                    guard painter.paint(ClipPainter.cgImage(src), t: t, to: pb) else { return false }
                                     return adaptor.append(pb, withPresentationTime: time)
                                 }
                                 if !ok { job.appendFailed = true }

@@ -552,7 +552,7 @@ struct SearchView: View {
     }
 
     private func header(_ s: String) -> some View {
-        Text(s).font(.title3.weight(.bold)).foregroundColor(.white).textCase(nil)
+        Text(s).font(.title3.weight(.bold)).foregroundColor(.primary).textCase(nil)
     }
 }
 
@@ -798,7 +798,7 @@ struct SongPickerView: View {
                     HStack(spacing: 12) {
                         ArtworkView(track: t, size: 42, corner: 5)
                         VStack(alignment: .leading) {
-                            Text(t.title).foregroundColor(.white).lineLimit(1)
+                            Text(t.title).foregroundColor(.primary).lineLimit(1)
                             Text(t.displayArtist).font(.caption).foregroundColor(Theme.dim).lineLimit(1)
                         }
                         Spacer()
@@ -820,7 +820,7 @@ struct SongPickerView: View {
                 }
             }
         }
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(Theme.scheme)
     }
 }
 
@@ -842,9 +842,37 @@ struct SettingsView: View {
     @State private var lockReport: [String]?
     @ObservedObject private var suno = SunoAuth.shared
     @State private var sunoSignIn = false
+    @AppStorage("appTheme") private var themeName = AppTheme.black.rawValue
+    @AppStorage("appAccent") private var accentName = AccentChoice.pink.rawValue
+    @State private var paintCheck: [String]?
 
     var body: some View {
         List {
+            Section {
+                Picker("Theme", selection: $themeName) {
+                    ForEach(AppTheme.allCases) { Text($0.title).tag($0.rawValue) }
+                }
+                .pickerStyle(.segmented)
+                .accessibilityIdentifier("theme-picker")
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 12) {
+                        ForEach(AccentChoice.allCases) { a in
+                            Button { accentName = a.rawValue } label: {
+                                Circle().fill(Color(a.pair.0)).frame(width: 30, height: 30)
+                                    .overlay(Circle().stroke(Color.primary, lineWidth: accentName == a.rawValue ? 3 : 0).padding(-4))
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(a.title)
+                            .accessibilityIdentifier("accent-\(a.rawValue)")
+                        }
+                    }
+                    .padding(.vertical, 6)
+                    .padding(.horizontal, 4)
+                }
+            } header: { Text("Appearance") } footer: {
+                Text("System follows your iPhone's light or dark mode. Black is pure black (saves battery on OLED screens). The colour is used for buttons and the playing song.")
+            }
+
             Section {
                 ForEach(library.folders) { f in
                     HStack(spacing: 12) {
@@ -928,7 +956,7 @@ struct SettingsView: View {
                 Toggle("Shuffle", isOn: Binding(get: { player.shuffle }, set: { player.setShuffle($0) }))
                 Button { showSpeed = true } label: {
                     HStack {
-                        Text("Speed").foregroundColor(.white)
+                        Text("Speed").foregroundColor(.primary)
                         Spacer()
                         Text(rateLabel(player.rate)).foregroundColor(Theme.dim)
                     }
@@ -985,6 +1013,20 @@ struct SettingsView: View {
                     ClipMaker.shared.source = .nowPlaying
                     ClipMaker.shared.openStudio = true
                 } label: { Label("Open Clip Studio", systemImage: "wand.and.stars") }
+                Button { AppUI.shared.showSnapSend = true } label: { Label("Send to Snapchat", systemImage: "camera.viewfinder") }
+                Button {
+                    Task.detached(priority: .userInitiated) {
+                        let lines = PaintCheck.run()
+                        let ok = !lines.contains { $0.hasSuffix("failed") }
+                        FolderLog.append("Paint check: " + (ok ? "all looks, shapes and song cards painted" : "some failed") + " (" + (lines.last ?? "") + ")")
+                        await MainActor.run { paintCheck = lines }
+                    }
+                } label: { Label("Check clip painting", systemImage: "checkmark.seal") }
+                if let paintCheck {
+                    Text(paintCheck.contains { $0.hasSuffix("failed") } ? "Some pictures couldn't be painted. Send the Player Log." :
+                            "Painting works on this iPhone: \(paintCheck.count - 1) checks passed. " + (paintCheck.last ?? ""))
+                        .font(.caption).foregroundColor(Theme.dim)
+                }
                 TextField("Facebook App ID (for Instagram Stories)", text: $igAppID)
                     .keyboardType(.numberPad)
                     .onChange(of: igAppID) { v in

@@ -141,6 +141,35 @@ jobs:
           xcrun simctl io "$UDID" screenshot shots/13f-clip-studio-again.png || true
           xcrun simctl openurl "$UDID" "loopplayer://studio" || true
           sleep 5; shoot 13g-studio-from-link
+          # 8e (1.5.4). Painting without Core Image: every look, shape and song card style; a phone
+          # video stored sideways (must come out upright, 360x640); 8-bit and Dream looks on video.
+          launch SIMCTL_CHILD_TEST_TAB=0 SIMCTL_CHILD_TEST_PAINT_OUT="$GITHUB_WORKSPACE/out/paint.txt"
+          waitfor out/paint.txt
+          TMPD="$(xcrun simctl get_app_container "$UDID" com.necro144.loopplayer data)/tmp"
+          mkdir -p "$TMPD"
+          ffmpeg -loglevel error -y -display_rotation 90 -i "media/clip.mp4" -c copy "$TMPD/turned.mp4" \
+            || ffmpeg -loglevel error -y -i "media/clip.mp4" -c copy -metadata:s:v:0 rotate=90 "$TMPD/turned.mp4"
+          ffprobe -v error -show_streams -select_streams v "$TMPD/turned.mp4" | grep -iE "width|height|rotat" || true
+          launch SIMCTL_CHILD_TEST_PLAY=1 SIMCTL_CHILD_TEST_PLAY_TITLE="Long Song Video" SIMCTL_CHILD_TEST_FULL=1 SIMCTL_CHILD_TEST_CLIP=5 SIMCTL_CHILD_TEST_CLIP_VIDEO="$TMPD/turned.mp4" SIMCTL_CHILD_TEST_CLIP_LOOK=noir SIMCTL_CHILD_TEST_CLIP_CAPTION="Up" SIMCTL_CHILD_TEST_CLIP_OUT="$GITHUB_WORKSPACE/out/clipturned.txt"
+          waitfor out/clipturned.txt
+          launch SIMCTL_CHILD_TEST_PLAY=1 SIMCTL_CHILD_TEST_PLAY_TITLE="Long Song Video" SIMCTL_CHILD_TEST_FULL=1 SIMCTL_CHILD_TEST_CLIP=5 SIMCTL_CHILD_TEST_CLIP_SIZE=square SIMCTL_CHILD_TEST_CLIP_LOOK=pixel SIMCTL_CHILD_TEST_CLIP_OUT="$GITHUB_WORKSPACE/out/clippixel.txt"
+          waitfor out/clippixel.txt
+          launch SIMCTL_CHILD_TEST_PLAY=1 SIMCTL_CHILD_TEST_PLAY_TITLE="Long Song Video" SIMCTL_CHILD_TEST_FULL=1 SIMCTL_CHILD_TEST_CLIP=5 SIMCTL_CHILD_TEST_CLIP_SIZE=youtube SIMCTL_CHILD_TEST_CLIP_LOOK=dream SIMCTL_CHILD_TEST_CLIP_OUT="$GITHUB_WORKSPACE/out/clipdream.txt"
+          waitfor out/clipdream.txt
+          # 8f (1.5.4). Send to Snapchat screen, and every tab in the Light, Dark and System themes
+          launch SIMCTL_CHILD_TEST_TAB=0 SIMCTL_CHILD_TEST_SNAP_SEND=1
+          sleep 7; shoot 13h-send-to-snapchat
+          for th in light dark; do
+            for t in 0 1 2 3 5; do
+              launch SIMCTL_CHILD_TEST_TAB=$t SIMCTL_CHILD_TEST_THEME=$th SIMCTL_CHILD_TEST_ACCENT=blue; sleep 5; shoot "13t-$th-tab$t"
+            done
+          done
+          launch SIMCTL_CHILD_TEST_PLAY=1 SIMCTL_CHILD_TEST_PLAY_TITLE="Long Song Video" SIMCTL_CHILD_TEST_STUDIO=1 SIMCTL_CHILD_TEST_THEME=light SIMCTL_CHILD_TEST_ACCENT=green
+          sleep 14; shoot 13u-studio-light
+          launch SIMCTL_CHILD_TEST_TAB=0 SIMCTL_CHILD_TEST_SNAP_SEND=1 SIMCTL_CHILD_TEST_THEME=light
+          sleep 7; shoot 13v-snap-light
+          launch SIMCTL_CHILD_TEST_TAB=5 SIMCTL_CHILD_TEST_THEME=black SIMCTL_CHILD_TEST_ACCENT=pink
+          sleep 5; shoot 13w-settings-black
           # 9. Suno: stream a public song, go to another app, keep playing; then a playlist
           launch SIMCTL_CHILD_TEST_TAB=0 SIMCTL_CHILD_TEST_SUNO="https://suno.com/song/538ab4ae-3ace-4abf-95f9-be0bed53b65d"                  SIMCTL_CHILD_TEST_SUNO_WAIT=40 SIMCTL_CHILD_TEST_SUNO_OUT="$GITHUB_WORKSPACE/out/suno.txt"
           sleep 14; shoot 14-suno-playing
@@ -196,6 +225,17 @@ jobs:
           check "^brightness=0\.([1-9]|0[5-9])" out/cliploop.txt "Cinematic clip has a picture (not black)"
           check "^brightness=0\.([1-9]|0[5-9])" out/clipphoto.txt "photo has a picture (not black)"
           check "^brightness=0\.([1-9]|0[5-9])" out/studio.txt "Clip Studio preview is not black"
+          check "^look mono: r=([0-9]+) g=\1 b=\1$" out/paint.txt "Mono look makes grey (colour matrix channels right)"
+          check "^look warm: r=2[45][0-9] g=0 b=0$" out/paint.txt "Warm look keeps red red"
+          check "^paint check took" out/paint.txt "every look, shape and song card painted"
+          if grep -q "failed" out/paint.txt; then echo "FAIL some paint checks failed"; fail=1; fi
+          check "^video=360x640$" out/clipturned.txt "sideways phone video comes out upright"
+          check "^brightness=0\.([1-9]|0[5-9])" out/clipturned.txt "upright clip has a picture"
+          check "^video=1080x1080$" out/clippixel.txt "8-bit look clip in Square"
+          check "^brightness=0\.([1-9]|0[5-9])" out/clippixel.txt "8-bit clip has a picture"
+          check "^video=1920x1080$" out/clipdream.txt "Dream look clip in YouTube 16:9"
+          check "^brightness=0\.([1-9]|0[5-9])" out/clipdream.txt "Dream clip has a picture"
+          cat out/paint.txt
           T=$(grep "^time=" out/bg.txt | cut -d= -f2); if [ "${T:-0}" -ge 35 ]; then echo "ok   background time $T s"; else echo "FAIL background time ${T:-?} s"; fail=1; fi
           cat out/play.txt
           grep -q "^tracks=6$" out/play.txt

@@ -251,7 +251,7 @@ struct SpotifyImportSheet: View {
                 if link.isEmpty, let s = UIPasteboard.general.string, SpotifyStore.parse(s) != nil { link = s }
             }
         }
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(Theme.scheme)
     }
 }
 
@@ -315,7 +315,7 @@ struct SpotifyListView: View {
                             .frame(width: 48, height: 48)
                             .overlay(Image(systemName: "questionmark").foregroundColor(Theme.dim))
                         VStack(alignment: .leading, spacing: 3) {
-                            Text(t.title).foregroundColor(.white.opacity(0.55)).lineLimit(1)
+                            Text(t.title).foregroundColor(Theme.dim).lineLimit(1)
                             Text(t.artist.isEmpty ? "Not in your files" : "\(t.artist) · not in your files")
                                 .font(.subheadline).foregroundColor(Theme.dim).lineLimit(1)
                         }

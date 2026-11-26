@@ -28,8 +28,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.necro144.loopplayer
         PRODUCT_NAME: LoopPlayer
-        MARKETING_VERSION: "1.5.3"
-        CURRENT_PROJECT_VERSION: "20"
+        MARKETING_VERSION: "1.5.4"
+        CURRENT_PROJECT_VERSION: "21"
         SWIFT_VERSION: "5.0"
         SWIFT_OBJC_BRIDGING_HEADER: LoopPlayer/LoopPlayer-Bridging-Header.h
         GENERATE_INFOPLIST_FILE: YES

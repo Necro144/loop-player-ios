@@ -834,15 +834,19 @@ enum Thumbnail {
         return best.map { UIImage(cgImage: $0.0).jpegData(compressionQuality: 0.8) } ?? nil
     }
 
-    private static let ci = CIContext(options: [.useSoftwareRenderer: false])
-
-    /// JPEG (max 640 px) and brightness of one frame the player decoded.
+    /// JPEG (max 640 px) and brightness of one frame the player decoded (no Core Image, 1.5.4).
     static func fromPixelBuffer(_ buf: CVPixelBuffer) -> (Data, Double)? {
-        var img = CIImage(cvPixelBuffer: buf)
-        let w = img.extent.width
-        if w > 640 { img = img.transformed(by: CGAffineTransform(scaleX: 640 / w, y: 640 / w)) }
-        guard let cg = ci.createCGImage(img, from: img.extent),
-              let jpg = UIImage(cgImage: cg).jpegData(compressionQuality: 0.8) else { return nil }
+        guard var cg = ClipPainter.cgImage(buf) else { return nil }
+        if cg.width > 640 {
+            let k = 640 / CGFloat(cg.width)
+            let w = 640, h = max(1, Int(CGFloat(cg.height) * k))
+            guard let c = ClipPainter.context(w, h) else { return nil }
+            c.interpolationQuality = .high
+            c.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+            guard let small = c.makeImage() else { return nil }
+            cg = small
+        }
+        guard let jpg = UIImage(cgImage: cg).jpegData(compressionQuality: 0.8) else { return nil }
         return (jpg, brightness(cg))
     }
 

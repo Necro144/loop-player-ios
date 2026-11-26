@@ -1,7 +1,6 @@
 import SwiftUI
 import AVKit
 import PhotosUI
-import CoreImage
 import UniformTypeIdentifiers
 
 // Clip Studio (1.5.0): pick what to share (the playing video or song, or a photo or video from
@@ -74,7 +73,7 @@ struct ClipStudioView: View {
             }
             .safeAreaInset(edge: .bottom) { sendBar }
         }
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(Theme.scheme)
         .overlay { ClipProgressOverlay(inStudio: true) }
         .onAppear {
             maker.studioShown = true
@@ -132,7 +131,7 @@ struct ClipStudioView: View {
         HStack(spacing: 12) {
             Image(systemName: icon).font(.title2).foregroundColor(on ? Theme.accent : Theme.dim).frame(width: 32)
             VStack(alignment: .leading, spacing: 2) {
-                Text(title).foregroundColor(.white)
+                Text(title).foregroundColor(.primary)
                 Text(sub).font(.caption).foregroundColor(Theme.dim).lineLimit(1)
             }
             Spacer()
@@ -240,7 +239,7 @@ struct ClipStudioView: View {
             .frame(height: 44)
             Text(s.title).font(.caption2.weight(.semibold)).multilineTextAlignment(.center).lineLimit(2)
         }
-        .foregroundColor(on ? Theme.accent : .white)
+        .foregroundColor(on ? Theme.accent : .primary)
         .frame(maxWidth: .infinity, minHeight: 84)
         .background(on ? Theme.accent.opacity(0.15) : Theme.surface2, in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(on ? Theme.accent : Color.clear, lineWidth: 1.5))
@@ -379,7 +378,7 @@ struct ClipStudioView: View {
                     HStack {
                         Image(systemName: u.pathExtension == "jpg" ? "photo" : (u.pathExtension == "m4a" ? "waveform" : "film"))
                             .foregroundColor(Theme.accent).frame(width: 26)
-                        Text(u.deletingPathExtension().lastPathComponent).foregroundColor(.white).lineLimit(1)
+                        Text(u.deletingPathExtension().lastPathComponent).foregroundColor(.primary).lineLimit(1)
                         Spacer()
                         Text(fileSize(u)).font(.caption).foregroundColor(Theme.dim)
                     }
@@ -419,7 +418,7 @@ struct ClipStudioView: View {
             }
             .frame(maxWidth: .infinity, minHeight: 50)
             .background(target == .snapchat ? AnyShapeStyle(Theme.gradient) : AnyShapeStyle(Theme.surface2), in: RoundedRectangle(cornerRadius: 12))
-            .foregroundColor(.white)
+            .foregroundColor(target == .snapchat ? .white : .primary)
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("studio-\(title.lowercased())")
@@ -441,7 +440,7 @@ struct ClipStudioView: View {
             Text(text).font(.subheadline.weight(.semibold))
                 .padding(.horizontal, 12).padding(.vertical, 7)
                 .background(on ? Theme.accent : Theme.surface2, in: Capsule())
-                .foregroundColor(.white)
+                .foregroundColor(on ? .white : .primary)
         }
         .buttonStyle(.plain)
     }
@@ -496,9 +495,9 @@ enum ClipStudioPreview {
     static func make(_ o: ClipOptions) async -> (image: UIImage, size: CGSize)? {
         let maker = ClipMaker.shared
         let player = Player.shared
-        var base: CIImage?
+        var base: CGImage?
         var sourceSize = CGSize(width: 1080, height: 1080)
-        var title = "", artist = "", card = false, art: CIImage?
+        var title = "", artist = "", card = false, art: CGImage?
         switch maker.source {
         case .photo(let u):
             guard let d = try? Data(contentsOf: u), let img = UIImage(data: d) else { return nil }
@@ -507,11 +506,11 @@ enum ClipStudioPreview {
             let k = min(1, 1200 / max(img.size.width, img.size.height, 1))
             let s = CGSize(width: (img.size.width * k).rounded(), height: (img.size.height * k).rounded())
             let up = UIGraphicsImageRenderer(size: s, format: f).image { _ in img.draw(in: CGRect(origin: .zero, size: s)) }
-            base = up.cgImage.map { CIImage(cgImage: $0) }
+            base = up.cgImage
             sourceSize = s
         case .video(let u):
             base = await frame(of: AVURLAsset(url: u), at: min(o.seconds, 20) / 2)
-            sourceSize = base?.extent.size ?? sourceSize
+            sourceSize = base.map { CGSize(width: $0.width, height: $0.height) } ?? sourceSize
         case .nowPlaying:
             guard let t = player.current else { return nil }
             title = t.title
@@ -522,7 +521,7 @@ enum ClipStudioPreview {
                 // The middle of the clip (song videos often open on black).
                 at += min(o.seconds, 20) / 2
                 base = await frame(of: a, at: at)
-                sourceSize = base?.extent.size ?? sourceSize
+                sourceSize = base.map { CGSize(width: $0.width, height: $0.height) } ?? sourceSize
             } else if !o.soundOnly {
                 card = true
                 art = ClipPainter.artImage(t.hasArtwork ? AppPaths.artworkFile(for: t.id) : nil)
@@ -538,12 +537,11 @@ enum ClipStudioPreview {
         // Small copy for the screen: same shape, text scaled the same way.
         let k = min(1, 720 / max(full.width, full.height))
         let small = CGSize(width: (full.width * k).rounded(), height: (full.height * k).rounded())
-        let painter = ClipPainter(render: small, framing: o.framing, look: o.look, natural: base.extent.size, orientation: nil,
+        let painter = ClipPainter(render: small, framing: o.framing, look: o.look,
                                   overlay: ClipPainter.overlay(size: small, options: o, title: card || o.showTitle ? title : "", artist: artist, card: card),
                                   fade: false, total: card ? 10 : 0, art: card ? art : nil, cardStyle: o.cardStyle)
         let out: UIImage? = await Task.detached(priority: .userInitiated) {
-            let img = painter.frame(base, t: card ? 4 : 0)
-            guard let cg = CIContext().createCGImage(img, from: CGRect(origin: .zero, size: small)) else { return nil }
+            guard let cg = painter.image(card ? nil : base, t: card ? 4 : 0) else { return nil }
             return UIImage(cgImage: cg)
         }.value
         guard let out else { return nil }
@@ -551,7 +549,7 @@ enum ClipStudioPreview {
     }
 
     /// Off the main thread (1.5.2: the brightness checks ran on it and made Clip Studio stall).
-    nonisolated private static func frame(of asset: AVAsset, at seconds: Double) async -> CIImage? {
+    nonisolated private static func frame(of asset: AVAsset, at seconds: Double) async -> CGImage? {
         let g = AVAssetImageGenerator(asset: asset)
         g.appliesPreferredTrackTransform = true
         g.maximumSize = CGSize(width: 960, height: 960)
@@ -563,9 +561,9 @@ enum ClipStudioPreview {
             if Task.isCancelled { return nil }
             guard let cg = try? await g.image(at: CMTime(seconds: max(0, t), preferredTimescale: 600)).image else { continue }
             let light = ClipMaker.brightness(cg)
-            if light > 0.09 { return CIImage(cgImage: cg) }
+            if light > 0.09 { return cg }
             if best == nil || light > best!.1 { best = (cg, light) }
         }
-        return best.map { CIImage(cgImage: $0.0) }
+        return best.map { $0.0 }
     }
 }

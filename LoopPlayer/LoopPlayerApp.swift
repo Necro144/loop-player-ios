@@ -349,8 +349,7 @@ enum TestHooks {
         done = true
         let env = ProcessInfo.processInfo.environment
         if let out = env["TEST_PAINT_OUT"] {
-            try? PaintCheck.run().joined(separator: "
-").write(toFile: out, atomically: true, encoding: .utf8)
+            try? PaintCheck.run().joined(separator: "\n").write(toFile: out, atomically: true, encoding: .utf8)
         }
         if env["TEST_SNAP_SEND"] == "1" {
             Task { @MainActor in

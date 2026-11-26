@@ -54,6 +54,14 @@ enum Watchdog {
                     let fd = open(p, O_WRONLY | O_APPEND | O_CREAT, 0o644)
                     if fd >= 0 {
                         _ = write(fd, m, strlen(m))
+                        // Which signal and where (1.5.3), for the developer.
+                        var head: [CChar] = [32, 32, 115, 105, 103, 110, 97, 108, 32, 48, 48, 10, 0]   // "  signal 00\n"
+                        head[9] = CChar(48 + (s / 10) % 10)
+                        head[10] = CChar(48 + s % 10)
+                        _ = write(fd, head, 12)
+                        var frames = [UnsafeMutableRawPointer?](repeating: nil, count: 24)
+                        let n = backtrace(&frames, 24)
+                        backtrace_symbols_fd(&frames, n, fd)
                         close(fd)
                     }
                 }

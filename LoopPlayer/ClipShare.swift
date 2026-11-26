@@ -145,6 +145,9 @@ final class ClipMaker: ObservableObject {
         return a
     }
 
+    /// There while a clip is being painted; still there at the next clip = painting closed the app.
+    static let paintMarker = AppPaths.support.appendingPathComponent("painting-clip")
+
     /// What the clip is cut from right now.
     private struct Input {
         let asset: AVAsset
@@ -262,7 +265,17 @@ final class ClipMaker: ObservableObject {
             mix = m
         }
 
-        if !card && !soundOnly && !comp.tracks(withMediaType: .video).isEmpty {
+        let hasVideo = !card && !soundOnly && !comp.tracks(withMediaType: .video).isEmpty
+        // Nothing to paint (original size, normal look, no text, no fade): the 1.4.4 way, which
+        // works on the owner's iPhone. And if painting closed the app last time, the 1.4.4 way too.
+        let overlayNeeded = !o.caption.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || o.showTitle || o.watermark
+        let needsPaint = o.size != .original || o.look != .none || overlayNeeded || o.fade
+        let crashedBefore = FileManager.default.fileExists(atPath: ClipMaker.paintMarker.path)
+        if hasVideo, needsPaint, crashedBefore {
+            FolderLog.append("Clip: painting closed Loop Player last time, so this clip is made the plain way (no size, look or text)")
+            try? FileManager.default.removeItem(at: ClipMaker.paintMarker)
+        }
+        if hasVideo && needsPaint && !crashedBefore {
             // Videos (1.5.2): every picture is painted in Loop Player and written into the MP4 by
             // Loop Player itself. 1.5.0/1.5.1 handed the painting to an export session (a Core Image
             // video composition), which crashed iOS's media service on the iPhone ("Cannot Complete
@@ -281,6 +294,9 @@ final class ClipMaker: ObservableObject {
                              + (reps > 1 ? ", looped \(reps)x" : "") + (o.look == .none ? "" : ", \(o.look.title)"))
             let stop = StopFlag()
             cardStop = stop
+            // Marker: if the app closes while painting, the next clip is made the plain way.
+            FileManager.default.createFile(atPath: ClipMaker.paintMarker.path, contents: Data())
+            defer { try? FileManager.default.removeItem(at: ClipMaker.paintMarker) }
             do {
                 try await ClipMaker.renderVideo(comp, natural: natural, mix: mix, pitch: pitch, painter: painter, render: render,
                                                 fps: fps, length: length, to: mp4, stop: stop) { p in
@@ -303,9 +319,13 @@ final class ClipMaker: ObservableObject {
                     return
                 }
             }
+        }
+        if hasVideo {
             // Plain clip, the 1.4.4 way (no painting): the right part, speed and loops, the
             // picture as it is. Worked on the iPhone before Clip Studio.
             progress = 0
+            FolderLog.append("Clip: \(Int(length)) s of \(inp.title) from \(Int(start)) s, plain"
+                             + (abs(rate - 1) > 0.001 ? ", \(String(format: "%.2f", rate))x" : "") + (reps > 1 ? ", looped \(reps)x" : ""))
             let preset = target == .snapchat ? AVAssetExportPreset1280x720 : AVAssetExportPreset1920x1080
             guard let s = AVAssetExportSession(asset: comp, presetName: preset) ?? AVAssetExportSession(asset: comp, presetName: AVAssetExportPresetHighestQuality) else {
                 fail("This file can't be cut into a clip.")
@@ -666,7 +686,7 @@ final class ClipMaker: ObservableObject {
         vOut.videoComposition = vc
         vOut.alwaysCopiesSampleData = false
         guard reader.canAdd(vOut) else { throw failure("the picture can't be read") }
-        reader.add(vOut)
+        try ClipMaker.objc { reader.add(vOut) }
 
         var aOut: AVAssetReaderAudioMixOutput?
         if !aTracks.isEmpty {
@@ -678,7 +698,7 @@ final class ClipMaker: ObservableObject {
             o.audioMix = mix
             o.audioTimePitchAlgorithm = pitch
             if reader.canAdd(o) {
-                reader.add(o)
+                try ClipMaker.objc { reader.add(o) }
                 aOut = o
             }
         }
@@ -698,7 +718,7 @@ final class ClipMaker: ObservableObject {
             kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any](),
         ])
         guard writer.canAdd(vIn) else { throw failure("the video can't be written") }
-        writer.add(vIn)
+        try ClipMaker.objc { writer.add(vIn) }
         var aIn: AVAssetWriterInput?
         if aOut != nil {
             let i = AVAssetWriterInput(mediaType: .audio, outputSettings: [
@@ -706,16 +726,18 @@ final class ClipMaker: ObservableObject {
             ])
             i.expectsMediaDataInRealTime = false
             if writer.canAdd(i) {
-                writer.add(i)
+                try ClipMaker.objc { writer.add(i) }
                 aIn = i
             }
         }
-        guard reader.startReading() else { throw reader.error ?? failure("the clip can't be read") }
-        guard writer.startWriting() else {
+        FolderLog.append("Clip step: reading \(Int(natural.width))x\(Int(natural.height)), writing \(w)x\(h) at \(fps) fps" + (aIn == nil ? ", no sound" : ""))
+        guard try ClipMaker.objc({ reader.startReading() }) else { throw reader.error ?? failure("the clip can't be read") }
+        guard try ClipMaker.objc({ writer.startWriting() }) else {
             reader.cancelReading()
             throw writer.error ?? failure("the video can't be written")
         }
-        writer.startSession(atSourceTime: .zero)
+        try ClipMaker.objc { writer.startSession(atSourceTime: .zero) }
+        FolderLog.append("Clip step: reading and writing started")
 
         let job = CardJob(frames: 0)
         let ctx = CIContext(options: [.cacheIntermediates: false])
@@ -726,24 +748,40 @@ final class ClipMaker: ObservableObject {
             group.enter()
             vIn.requestMediaDataWhenReady(on: DispatchQueue(label: "loopplayer.clip.video")) {
                 while vIn.isReadyForMoreMediaData && !job.videoDone {
-                    var done = stop.stop || writer.status == .failed || reader.status == .failed
+                    var done = stop.stop || writer.status != .writing || reader.status == .failed
                     if !done {
                         autoreleasepool {
-                            guard let sample = vOut.copyNextSampleBuffer() else { done = true; return }
+                            var next: CMSampleBuffer?
+                            do { next = try ClipMaker.objc { vOut.copyNextSampleBuffer() } } catch {
+                                job.error = "reading a picture: \(error.localizedDescription)"
+                                done = true
+                                return
+                            }
+                            guard let sample = next else { done = true; return }
                             let time = CMSampleBufferGetPresentationTimeStamp(sample)
                             guard let src = CMSampleBufferGetImageBuffer(sample) else { return }
                             var pb: CVPixelBuffer?
                             if let pool = adaptor.pixelBufferPool { CVPixelBufferPoolCreatePixelBuffer(nil, pool, &pb) }
                             guard let pb else { job.appendFailed = true; return }
                             let t = CMTimeGetSeconds(time)
-                            ctx.render(painter.frame(CIImage(cvPixelBuffer: src), t: t), to: pb, bounds: rect, colorSpace: space)
-                            if !adaptor.append(pb, withPresentationTime: time) { job.appendFailed = true }
+                            do {
+                                let ok = try ClipMaker.objc { () -> Bool in
+                                    ctx.render(painter.frame(CIImage(cvPixelBuffer: src), t: t), to: pb, bounds: rect, colorSpace: space)
+                                    return adaptor.append(pb, withPresentationTime: time)
+                                }
+                                if !ok { job.appendFailed = true }
+                            } catch {
+                                job.error = "painting a picture: \(error.localizedDescription)"
+                                done = true
+                                return
+                            }
                             job.frame += 1
+                            if job.frame == 1 { FolderLog.append("Clip step: first picture painted and written") }
                             if job.frame % 10 == 0 { progress(min(1, max(0, t / length))) }
                         }
                     }
                     if done {
-                        vIn.markAsFinished()
+                        try? ClipMaker.objc { vIn.markAsFinished() }
                         job.videoDone = true
                         group.leave()
                         return
@@ -754,10 +792,16 @@ final class ClipMaker: ObservableObject {
                 group.enter()
                 aIn.requestMediaDataWhenReady(on: DispatchQueue(label: "loopplayer.clip.audio")) {
                     while aIn.isReadyForMoreMediaData && !job.audioDone {
-                        if !stop.stop, writer.status != .failed, reader.status != .failed, let sample = aOut.copyNextSampleBuffer() {
-                            aIn.append(sample)
+                        var sample: CMSampleBuffer?
+                        if !stop.stop, writer.status == .writing, reader.status == .reading {
+                            do { sample = try ClipMaker.objc { aOut.copyNextSampleBuffer() } } catch {
+                                job.error = "reading the sound: \(error.localizedDescription)"
+                            }
+                        }
+                        if let sample, (try? ClipMaker.objc { aIn.append(sample) }) != nil {
+                            continue
                         } else {
-                            aIn.markAsFinished()
+                            try? ClipMaker.objc { aIn.markAsFinished() }
                             job.audioDone = true
                             group.leave()
                             return
@@ -772,6 +816,11 @@ final class ClipMaker: ObservableObject {
             reader.cancelReading()
             throw CancellationError()
         }
+        if let e = job.error {
+            writer.cancelWriting()
+            reader.cancelReading()
+            throw failure(e)
+        }
         if reader.status == .failed {
             writer.cancelWriting()
             throw reader.error ?? failure("the clip couldn't be read")
@@ -783,6 +832,18 @@ final class ClipMaker: ObservableObject {
         await writer.finishWriting()
         if writer.status != .completed { throw writer.error ?? failure("the video couldn't be finished") }
         if job.appendFailed { FolderLog.append("Clip: some pictures were skipped") }
+    }
+
+    /// Runs an AVFoundation call and turns an Objective-C exception into a Swift error, so a
+    /// refusal makes a plain clip instead of closing the app (1.5.3).
+    nonisolated static func objc<T>(_ body: () -> T) throws -> T {
+        var result: T?
+        var err: NSError?
+        let ok = LPTry({ result = body() }, &err)
+        guard ok, let result else {
+            throw err ?? NSError(domain: "LoopPlayer", code: 9, userInfo: [NSLocalizedDescriptionKey: "AVFoundation refused"])
+        }
+        return result
     }
 
     /// The details of a finished clip: for checking what Snapchat and Instagram are given.
@@ -1094,5 +1155,7 @@ private final class CardJob: @unchecked Sendable {
     var videoDone = false
     var audioDone = false
     var appendFailed = false
+    /// An Objective-C exception caught while painting (1.5.3).
+    var error: String?
     init(frames: Int) { self.frames = frames }
 }

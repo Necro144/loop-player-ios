@@ -402,10 +402,13 @@ final class ClipPainter: @unchecked Sendable {
             return CIImage(cgImage: cg)
         }
         let r = CGRect(x: 0, y: 0, width: 1000, height: 1000)
-        return CIImage(color: .black).cropped(to: r).applyingFilter("CILinearGradient", parameters: [
+        // A gradient makes its own picture: it takes no input picture (1.5.1 gave it one and
+        // crashed: "CILinearGradient ... not key value coding-compliant for the key inputImage").
+        let g = CIFilter(name: "CILinearGradient", parameters: [
             "inputPoint0": CIVector(x: 0, y: 1000), "inputColor0": CIColor(red: 1, green: 0.27, blue: 0.47),
             "inputPoint1": CIVector(x: 1000, y: 0), "inputColor1": CIColor(red: 1, green: 0.55, blue: 0.35),
-        ]).cropped(to: r)
+        ])?.outputImage
+        return (g ?? CIImage(color: CIColor(red: 1, green: 0.27, blue: 0.47))).cropped(to: r)
     }
 
     /// Text on top of the clip (title, caption, stamp), drawn once.

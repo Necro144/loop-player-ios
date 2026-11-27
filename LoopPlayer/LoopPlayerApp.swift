@@ -446,6 +446,10 @@ enum TestHooks {
                     try? await Task.sleep(nanoseconds: 3_000_000_000)
                     ClipMaker.shared.songToSnapchatCamera()
                 }
+                if env["TEST_PASTE_OUT"] != nil {
+                    try? await Task.sleep(nanoseconds: 4_000_000_000)
+                    ClipMaker.shared.songToSnapchatCamera(paste: true)
+                }
                 if env["TEST_STUDIO"] == "1" {
                     try? await Task.sleep(nanoseconds: 3_000_000_000)
                     ClipMaker.shared.openStudio = true

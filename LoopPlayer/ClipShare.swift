@@ -59,6 +59,8 @@ final class ClipMaker: ObservableObject {
     /// 0...1 while a clip is being made, nil otherwise.
     @Published var progress: Double?
     @Published var error: String?
+    /// A sticker is on the clipboard for Snapchat (1.5.6): Send to Snapchat shows how to paste it.
+    @Published var pasteReady = false
     /// The last clip made (Clip Studio shows it).
     @Published var last: ClipResult?
     /// A Clip Studio sheet is on screen (the player's own progress box steps aside).

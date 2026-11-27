@@ -2,6 +2,11 @@ import SwiftUI
 import AVFoundation
 import UIKit
 
+// 1.5.6: the owner's test showed Snapchat tags a snap as "Media Upload" whenever Creative Kit
+// content is on it, even a sticker on Snapchat's own live camera. So the default way now skips
+// Creative Kit: the sticker is copied, Snapchat's plain camera opens, and the owner pastes it
+// onto a snap taken in Snapchat (pasteToSnapchat). Creative Kit stays as a choice.
+//
 // Real snaps (1.5.5). Snapchat labels every photo or video another app hands it as
 // "Media Upload". The one way to make a real snap is Snapchat's camera mode: Loop Player puts a
 // sticker (the song card, or a picked photo) on Snapchat's live camera, and the snap is taken in
@@ -39,6 +44,31 @@ extension ClipMaker {
                 FolderLog.append("Snapchat camera: snapchat:// didn't open")
                 Task { @MainActor in self?.error = "Snapchat didn't open. Is Snapchat installed?" }
             }
+        }
+    }
+
+    /// No Creative Kit: the sticker goes on the clipboard (PNG, 10 minutes) and Send to Snapchat
+    /// shows how to paste it before opening Snapchat's plain camera.
+    func pasteToSnapchat(_ img: UIImage) {
+        guard let png = img.pngData() else {
+            error = "The sticker couldn't be made."
+            return
+        }
+        UIPasteboard.general.setItems([["public.png": png]], options: [.expirationDate: Date().addingTimeInterval(600)])
+        FolderLog.append("Snapchat paste: sticker \(Int(img.size.width))x\(Int(img.size.height)) (\(png.count / 1024) KB) copied")
+        if let out = ProcessInfo.processInfo.environment["TEST_PASTE_OUT"] {
+            let got = UIPasteboard.general.image
+            try? "pasted=\(Int(got?.size.width ?? 0))x\(Int(got?.size.height ?? 0))".write(toFile: out, atomically: true, encoding: .utf8)
+        }
+        pasteReady = true
+    }
+
+    /// Snapchat's plain camera, nothing handed over.
+    func openSnapchatPlain() {
+        guard let u = URL(string: "snapchat://") else { return }
+        FolderLog.append("Snapchat paste: plain camera opened")
+        UIApplication.shared.open(u) { [weak self] ok in
+            if !ok { Task { @MainActor in self?.error = "Snapchat didn't open. Is Snapchat installed?" } }
         }
     }
 
@@ -103,7 +133,7 @@ extension ClipMaker {
     }
 
     /// The playing song as a sticker on Snapchat's camera.
-    func songToSnapchatCamera() {
+    func songToSnapchatCamera(paste: Bool = false) {
         guard let t = Player.shared.current else {
             error = "Play a song first."
             return
@@ -118,18 +148,18 @@ extension ClipMaker {
                 return
             }
             self.writeStickerTest(img)
-            self.toSnapchatCamera(sticker: img, widthShare: 0.6, posY: 0.42)
+            if paste { self.pasteToSnapchat(img) } else { self.toSnapchatCamera(sticker: img, widthShare: 0.6, posY: 0.42) }
         }
     }
 
     /// A photo as a sticker on Snapchat's camera.
-    func photoToSnapchatCamera(_ file: URL) {
+    func photoToSnapchatCamera(_ file: URL, paste: Bool = false) {
         guard let d = try? Data(contentsOf: file), let ui = UIImage(data: d), let img = ClipMaker.photoSticker(ui) else {
             error = "The photo couldn't be read."
             return
         }
         writeStickerTest(img)
-        toSnapchatCamera(sticker: img, widthShare: 0.8)
+        if paste { pasteToSnapchat(img) } else { toSnapchatCamera(sticker: img, widthShare: 0.8) }
     }
 
     /// Simulator test: the sticker's size.

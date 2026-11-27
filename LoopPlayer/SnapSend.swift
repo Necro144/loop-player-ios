@@ -31,27 +31,30 @@ struct SnapSendView: View {
     @State private var importing = false
     @State private var loading = false
     @AppStorage("snapSendSeconds") private var seconds: Double = 15
-    /// Photos go onto Snapchat's camera as a sticker: the snap is taken in Snapchat (a real snap).
-    @AppStorage("snapCameraMode") private var cameraMode = true
+    /// How stickers and photos reach Snapchat (1.5.6): "paste" (copy, then paste on a snap taken in
+    /// Snapchat; no Creative Kit, so no Media Upload label), "kit" (sticker on Snapchat's camera through
+    /// Creative Kit; Snapchat labels it Media Upload) or "upload" (the photo itself, Media Upload).
+    @AppStorage("snapWay") private var way = "paste"
 
     var body: some View {
         NavigationStack {
             List {
                 Section {
-                    Button { maker.songToSnapchatCamera() } label: {
-                        row("Song sticker on the camera", player.current.map { "\($0.title): take the snap in Snapchat" } ?? "Play a song first", "music.note.list")
+                    Button { maker.songToSnapchatCamera(paste: way != "kit") } label: {
+                        row("Song sticker", player.current.map { "\($0.title): " + (way == "kit" ? "on Snapchat's camera" : "copied, paste it on your snap") } ?? "Play a song first", "music.note.list")
                     }
                     .disabled(player.current == nil)
                     .accessibilityIdentifier("snap-sticker")
-                    Toggle(isOn: $cameraMode) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Photos as real snaps")
-                            Text("A picked photo goes onto Snapchat's camera as a sticker").font(.caption).foregroundColor(Theme.dim)
-                        }
+                    Picker("Photos and stickers", selection: $way) {
+                        Text("Copy & paste: real snap").tag("paste")
+                        Text("Sticker on Snapchat's camera").tag("kit")
+                        Text("Send the photo itself").tag("upload")
                     }
-                    .tint(Theme.accent)
-                } header: { Text("Real snap (Snapchat's camera)") } footer: {
-                    Text("Snapchat marks every photo or video another app sends as \"Media Upload\". A snap only shows as yours when it's taken with Snapchat's camera, so here Loop Player puts the song (or your photo) on Snapchat's camera as a sticker: move or resize it, then take the photo or video in Snapchat.")
+                    .accessibilityIdentifier("snap-way")
+                } header: { Text("Real snap") } footer: {
+                    Text(way == "paste" ? "Snapchat labels everything another app hands it as \"Media Upload\", even a sticker put on its own camera. Copy & paste hands Snapchat nothing: Loop Player copies the song card or photo and opens Snapchat. Take your snap, tap T (text), hold on the screen and tap Paste. The picture goes on as a sticker and the snap stays a real snap."
+                         : way == "kit" ? "The sticker is put on Snapchat's live camera. Snapchat still shows these snaps as \"Media Upload\"."
+                         : "The photo is sent as it is. Snapchat shows it as \"Media Upload\".")
                 }
                 Section {
                     PhotosPicker(selection: $pick, matching: .any(of: [.images, .videos]), photoLibrary: .shared()) {
@@ -91,6 +94,12 @@ struct SnapSendView: View {
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
         }
         .overlay { ClipProgressOverlay(inStudio: false) }
+        .alert("Copied for Snapchat", isPresented: $maker.pasteReady) {
+            Button("Open Snapchat") { maker.openSnapchatPlain() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("In Snapchat: take your photo or video, tap T (text), hold on the screen and tap Paste. Move or resize the sticker, then send. It shows as a snap you took, not Media Upload.")
+        }
         .onChange(of: pick) { item in load(item) }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.movie, .image], allowsMultipleSelection: false) { r in
             guard case .success(let urls) = r, let u = urls.first else { return }
@@ -151,8 +160,8 @@ struct SnapSendView: View {
             let d = CMTimeGetSeconds(AVURLAsset(url: file).duration)
             o.seconds = d.isFinite && d > 0 ? min(60, d) : 60
             maker.source = .video(file)
-        } else if cameraMode {
-            maker.photoToSnapchatCamera(file)
+        } else if way != "upload" {
+            maker.photoToSnapchatCamera(file, paste: way == "paste")
             return
         } else {
             maker.source = .photo(file)

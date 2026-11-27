@@ -186,6 +186,10 @@ jobs:
           # Song sticker for Snapchat's camera
           launch SIMCTL_CHILD_TEST_PLAY=1 SIMCTL_CHILD_TEST_PLAY_VIDEO=0 SIMCTL_CHILD_TEST_TAB=0 SIMCTL_CHILD_TEST_THEME=black SIMCTL_CHILD_TEST_STICKER_OUT="$GITHUB_WORKSPACE/out/sticker.txt"
           waitfor out/sticker.txt
+          # 1.5.6: copy & paste way (no Creative Kit): sticker on the clipboard, how-to alert
+          launch SIMCTL_CHILD_TEST_PLAY=1 SIMCTL_CHILD_TEST_PLAY_VIDEO=0 SIMCTL_CHILD_TEST_TAB=0 SIMCTL_CHILD_TEST_SNAP_SEND=1 SIMCTL_CHILD_TEST_PASTE_OUT="$GITHUB_WORKSPACE/out/paste.txt"
+          waitfor out/paste.txt
+          sleep 2; shoot 13z4-snap-paste-alert
           # 9. Suno: stream a public song, go to another app, keep playing; then a playlist
           launch SIMCTL_CHILD_TEST_TAB=0 SIMCTL_CHILD_TEST_SUNO="https://suno.com/song/538ab4ae-3ace-4abf-95f9-be0bed53b65d"                  SIMCTL_CHILD_TEST_SUNO_WAIT=40 SIMCTL_CHILD_TEST_SUNO_OUT="$GITHUB_WORKSPACE/out/suno.txt"
           sleep 14; shoot 14-suno-playing
@@ -252,6 +256,7 @@ jobs:
           check "^video=1920x1080$" out/clipdream.txt "Dream look clip in YouTube 16:9"
           check "^brightness=0\.([1-9]|0[5-9])" out/clipdream.txt "Dream clip has a picture"
           check "^sticker=672x822$" out/sticker.txt "song sticker made for Snapchat's camera"
+          check "^pasted=672x822$" out/paste.txt "song sticker copied for pasting in Snapchat"
           cat out/paint.txt
           T=$(grep "^time=" out/bg.txt | cut -d= -f2); if [ "${T:-0}" -ge 35 ]; then echo "ok   background time $T s"; else echo "FAIL background time ${T:-?} s"; fail=1; fi
           cat out/play.txt
